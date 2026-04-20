@@ -122,8 +122,8 @@ func main() {
 	if os.Getenv("JWT_SECRET") == "" {
 		slog.Warn("JWT_SECRET is not set — using insecure default. Set JWT_SECRET for production use.")
 	}
-	if os.Getenv("RESEND_API_KEY") == "" {
-		slog.Warn("RESEND_API_KEY is not set — email verification codes will be printed to the log instead of emailed.")
+	if os.Getenv("RESEND_API_KEY") == "" && os.Getenv("SMTP_HOST") == "" {
+		slog.Warn("No email provider is configured — verification codes will be printed to the log instead of emailed. Set RESEND_API_KEY or SMTP_HOST.")
 	}
 	if os.Getenv("MULTICA_DEV_VERIFICATION_CODE") != "" {
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {

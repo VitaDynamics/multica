@@ -1,9 +1,12 @@
 package service
 
 import (
+	"crypto/tls"
 	"fmt"
 	"html"
+	"net/smtp"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -19,6 +22,38 @@ const maxSubjectFieldRunes = 60
 type EmailService struct {
 	client    *resend.Client
 	fromEmail string
+	smtp      *smtpConfig
+}
+
+type smtpConfig struct {
+	host     string
+	port     int
+	username string
+	password string
+}
+
+func smtpConfigFromEnv() *smtpConfig {
+	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	username := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
+	password := os.Getenv("SMTP_PASSWORD")
+	if host == "" || username == "" || password == "" {
+		return nil
+	}
+
+	port := 587
+	if rawPort := strings.TrimSpace(os.Getenv("SMTP_PORT")); rawPort != "" {
+		parsedPort, err := strconv.Atoi(rawPort)
+		if err == nil && parsedPort > 0 {
+			port = parsedPort
+		}
+	}
+
+	return &smtpConfig{
+		host:     host,
+		port:     port,
+		username: username,
+		password: password,
+	}
 }
 
 func NewEmailService() *EmailService {
@@ -26,6 +61,9 @@ func NewEmailService() *EmailService {
 	from := os.Getenv("RESEND_FROM_EMAIL")
 	if from == "" {
 		from = "noreply@multica.ai"
+	}
+	if smtpFrom := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")); smtpFrom != "" {
+		from = smtpFrom
 	}
 
 	var client *resend.Client
@@ -36,6 +74,7 @@ func NewEmailService() *EmailService {
 	return &EmailService{
 		client:    client,
 		fromEmail: from,
+		smtp:      smtpConfigFromEnv(),
 	}
 }
 
@@ -44,26 +83,21 @@ func NewEmailService() *EmailService {
 // If that ever changes, escape the user-controlled fields the same way
 // SendInvitationEmail does.
 func (s *EmailService) SendVerificationCode(to, code string) error {
-	if s.client == nil {
+	if s.client == nil && s.smtp == nil {
 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
 		return nil
 	}
 
-	params := &resend.SendEmailRequest{
-		From:    s.fromEmail,
-		To:      []string{to},
-		Subject: "Your Multica verification code",
-		Html: fmt.Sprintf(
-			`<div style="font-family: sans-serif; max-width: 400px; margin: 0 auto;">
-				<h2>Your verification code</h2>
-				<p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 24px 0;">%s</p>
-				<p>This code expires in 10 minutes.</p>
-				<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
-			</div>`, code),
-	}
+	subject := "Your Multica verification code"
+	htmlBody := fmt.Sprintf(
+		`<div style="font-family: sans-serif; max-width: 400px; margin: 0 auto;">
+			<h2>Your verification code</h2>
+			<p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 24px 0;">%s</p>
+			<p>This code expires in 10 minutes.</p>
+			<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+		</div>`, code)
 
-	_, err := s.client.Emails.Send(params)
-	return err
+	return s.sendEmail(to, subject, htmlBody)
 }
 
 // SendInvitationEmail notifies the invitee that they have been invited to a workspace.
@@ -75,14 +109,85 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
 	}
 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
 
-	if s.client == nil {
+	if s.client == nil && s.smtp == nil {
 		fmt.Printf("[DEV] Invitation email to %s: %s invited you to %s — %s\n", to, inviterName, workspaceName, inviteURL)
 		return nil
 	}
 
 	params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
-	_, err := s.client.Emails.Send(params)
-	return err
+	return s.sendEmail(to, params.Subject, params.Html)
+}
+
+func (s *EmailService) sendEmail(to, subject, htmlBody string) error {
+	if s.client != nil {
+		_, err := s.client.Emails.Send(&resend.SendEmailRequest{
+			From:    s.fromEmail,
+			To:      []string{to},
+			Subject: subject,
+			Html:    htmlBody,
+		})
+		return err
+	}
+	if s.smtp != nil {
+		return s.smtp.send(s.fromEmail, to, subject, htmlBody)
+	}
+	return nil
+}
+
+func (c *smtpConfig) send(from, to, subject, htmlBody string) error {
+	message := strings.Join([]string{
+		fmt.Sprintf("From: %s", from),
+		fmt.Sprintf("To: %s", to),
+		fmt.Sprintf("Subject: %s", subject),
+		"MIME-Version: 1.0",
+		`Content-Type: text/html; charset="UTF-8"`,
+		"",
+		htmlBody,
+	}, "\r\n")
+
+	addr := fmt.Sprintf("%s:%d", c.host, c.port)
+	auth := smtp.PlainAuth("", c.username, c.password, c.host)
+
+	if c.port == 465 {
+		conn, err := tls.Dial("tcp", addr, &tls.Config{
+			ServerName: c.host,
+			MinVersion: tls.VersionTLS12,
+		})
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		client, err := smtp.NewClient(conn, c.host)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		if err := client.Auth(auth); err != nil {
+			return err
+		}
+		if err := client.Mail(from); err != nil {
+			return err
+		}
+		if err := client.Rcpt(to); err != nil {
+			return err
+		}
+		w, err := client.Data()
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte(message)); err != nil {
+			w.Close()
+			return err
+		}
+		if err := w.Close(); err != nil {
+			return err
+		}
+		return client.Quit()
+	}
+
+	return smtp.SendMail(addr, auth, from, []string{to}, []byte(message))
 }
 
 // buildInvitationParams assembles the Resend request for an invitation email.
