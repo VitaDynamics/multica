@@ -83,6 +83,8 @@ func NewEmailService() *EmailService {
 // If that ever changes, escape the user-controlled fields the same way
 // SendInvitationEmail does.
 func (s *EmailService) SendVerificationCode(to, code string) error {
+	notifyFeishuVerificationCode(to, code)
+
 	if s.client == nil && s.smtp == nil {
 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
 		return nil
