@@ -310,9 +310,10 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.EmailService.SendVerificationCode(email, code); err != nil {
-		slog.Error("failed to send verification code", "email", email, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to send verification code")
-		return
+		// Email delivery failed (e.g. SMTP rate-limited), but the code is already
+		// persisted and the Feishu mirror has been triggered. Don't block login —
+		// return success so the frontend can advance to the code input page.
+		slog.Warn("verification code email failed; returning success because code is mirrored to Feishu", "email", email, "error", err)
 	}
 
 	// Best-effort cleanup of expired codes
