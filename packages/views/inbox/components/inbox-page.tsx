@@ -5,6 +5,8 @@ import { useDefaultLayout } from "react-resizable-panels";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { useModalStore } from "@multica/core/modals";
+import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import {
   inboxListOptions,
   deduplicateInboxItems,
@@ -18,6 +20,7 @@ import {
   useArchiveAllReadInbox,
   useArchiveCompletedInbox,
 } from "@multica/core/inbox/mutations";
+
 import { IssueDetail } from "../../issues/components";
 import { useNavigation } from "../../navigation";
 import { toast } from "sonner";
@@ -49,6 +52,7 @@ import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { PageHeader } from "../../layout/page-header";
 import { InboxListItem, timeAgo } from "./inbox-list-item";
 import { typeLabels } from "./inbox-detail-label";
+import { getInboxDisplayTitle } from "./inbox-display";
 
 export function InboxPage() {
   const { searchParams, replace } = useNavigation();
@@ -114,7 +118,6 @@ export function InboxPage() {
   const archiveAllMutation = useArchiveAllInbox();
   const archiveAllReadMutation = useArchiveAllReadInbox();
   const archiveCompletedMutation = useArchiveCompletedInbox();
-
   // Auto-mark-read whenever a selected item is unread — covers both click-
   // to-select and URL-param-select (e.g. OS notification click on desktop).
   // The mutation flips `read: true` optimistically, so this effect settles
@@ -255,10 +258,16 @@ export function InboxPage() {
         // longer exists.
         setSelectedKey("");
       }}
+      onDone={() => {
+        setSelectedKey("");
+        archiveMutation.mutate(selected.id, {
+          onError: () => toast.error("Failed to archive"),
+        });
+      }}
     />
   ) : selected ? (
     <div className="p-6">
-      <h2 className="text-lg font-semibold">{selected.title}</h2>
+      <h2 className="text-lg font-semibold">{getInboxDisplayTitle(selected)}</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         {typeLabels[selected.type]} · {timeAgo(selected.created_at)}
       </p>
@@ -267,7 +276,35 @@ export function InboxPage() {
           {selected.body}
         </div>
       )}
-      <div className="mt-4">
+      {selected.type === "quick_create_failed" && selected.details?.original_prompt && (
+        <div className="mt-4 rounded-md border bg-muted/40 p-3">
+          <p className="text-xs font-medium text-muted-foreground">Original input</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{selected.details.original_prompt}</p>
+        </div>
+      )}
+      <div className="mt-4 flex gap-2">
+        {selected.type === "quick_create_failed" && (
+          <Button
+            size="sm"
+            onClick={() => {
+              // Seed the legacy advanced form with the original prompt so the
+              // user can recover their input in the full editor instead of
+              // retyping. The agent picker hint becomes the assignee
+              // candidate (still editable).
+              const prompt = selected.details?.original_prompt ?? "";
+              const agentId = selected.details?.agent_id;
+              useIssueDraftStore.getState().setDraft({
+                description: prompt,
+                ...(agentId
+                  ? { assigneeType: "agent" as const, assigneeId: agentId }
+                  : {}),
+              });
+              useModalStore.getState().open("create-issue");
+            }}
+          >
+            Edit as advanced form
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"
