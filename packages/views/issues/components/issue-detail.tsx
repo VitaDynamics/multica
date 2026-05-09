@@ -6,12 +6,10 @@ import { AppLink } from "../../navigation";
 import { useNavigation } from "../../navigation";
 import {
   Archive,
-  ArrowDownToLine,
   Calendar,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   CircleCheck,
   MoreHorizontal,
   PanelRight,
@@ -46,6 +44,8 @@ import { IssueActionsDropdown, useIssueActions } from "../actions";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { CommentCard } from "./comment-card";
 import { CommentInput } from "./comment-input";
+import { ResolvedThreadBar } from "./resolved-thread-bar";
+import { collectThreadReplies } from "./thread-utils";
 import { AgentLiveCard } from "./agent-live-card";
 import { ExecutionLogSection } from "./execution-log-section";
 import { useQuery } from "@tanstack/react-query";
@@ -153,6 +153,23 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
+// Stable reference for threads with no replies. Inline `[]` would create a
+// new array on every render and bust React.memo on CommentCard / ResolvedThreadBar.
+const EMPTY_REPLIES: TimelineEntry[] = [];
+
+// Shallow array equality by element identity. Used to reuse the previous
+// render's per-thread reply slice when nothing in *this* thread changed,
+// even if the surrounding `timeline` array was rebuilt by a WS event in
+// some unrelated thread.
+function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 function TimelineSkeleton() {
   return (
     <div className="mt-4 flex flex-col gap-3">
@@ -231,6 +248,26 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [tokenUsageOpen, setTokenUsageOpen] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  // Per-session: which resolved threads the user has temporarily expanded.
+  // Not persisted (matches Linear) — reload collapses everything back to bars.
+  const [expandedResolved, setExpandedResolved] = useState<Set<string>>(() => new Set());
+  const toggleResolvedExpand = useCallback((commentId: string, expand: boolean) => {
+    setExpandedResolved((prev) => {
+      const next = new Set(prev);
+      if (expand) next.add(commentId);
+      else next.delete(commentId);
+      return next;
+    });
+  }, []);
+  const clearResolvedExpand = useCallback((commentId: string) => {
+    setExpandedResolved((prev) => {
+      if (!prev.has(commentId)) return prev;
+      const next = new Set(prev);
+      next.delete(commentId);
+      return next;
+    });
+  }, []);
   const didHighlightRef = useRef<string | null>(null);
 
   // Issue data from TQ — uses detail query, seeded from list cache if available.
@@ -280,39 +317,64 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const {
     timeline, loading: timelineLoading,
     submitComment, submitReply,
-    editComment, deleteComment, toggleReaction: handleToggleReaction,
-    hasMoreOlder, hasMoreNewer,
-    isFetchingOlder, isFetchingNewer,
-    fetchOlder, fetchNewer, jumpToLatest,
-    isAtLatest, newEntriesBelowCount,
-  } = useIssueTimeline(id, user?.id, { around: highlightCommentId ?? null });
+    editComment, deleteComment, toggleResolveComment, toggleReaction: handleToggleReaction,
+  } = useIssueTimeline(id, user?.id);
 
-  // Memoized timeline grouping. The same Map / groups references are reused
-  // across re-renders that don't change `timeline`, so React.memo on
-  // CommentCard can skip re-rendering when the only thing that moved was
-  // unrelated parent state (e.g. composer draft, sidebar toggle).
+  // Resolve / unresolve must always clear the per-session expand entry so
+  // re-resolving an already-expanded thread folds it back to the bar (the
+  // expand Set is keyed only on commentId, not on resolution state). Without
+  // this wrapper, an expand → unresolve → resolve sequence keeps the thread
+  // visually expanded after the second resolve.
+  const handleResolveToggle = useCallback(
+    (commentId: string, resolved: boolean) => {
+      clearResolvedExpand(commentId);
+      toggleResolveComment(commentId, resolved);
+    },
+    [clearResolvedExpand, toggleResolveComment],
+  );
+
+  // Memoized timeline grouping. Each render rebuilds the per-parent map from
+  // the latest timeline, then pre-flattens each thread's reply subtree into a
+  // dedicated `threadReplies` slice per root. Slices are stabilized against
+  // the previous render via `prevThreadRepliesRef`: if a thread's flat list
+  // is shallow-equal to the previous one, we reuse the previous array so
+  // React.memo on CommentCard / ResolvedThreadBar can short-circuit. Without
+  // this, every WS event (including reactions, edits, AI streaming on an
+  // unrelated thread) hands every card a brand-new prop reference and forces
+  // every thread subtree to re-render in lockstep.
+  const prevThreadRepliesRef = useRef<Map<string, TimelineEntry[]>>(new Map());
   const timelineView = useMemo(() => {
-    // Orphan-reply rescue (#1857): a reply whose parent_id points to a
-    // comment that isn't in the loaded timeline gets promoted to top-level
-    // instead of disappearing. Without this, paginating between a root and
-    // its replies (or a backend bug that drops the root from the page) hides
-    // the entire reply subtree because only the root's CommentCard knows to
-    // pull its children out of repliesByParent.
-    const idsInTimeline = new Set(timeline.map((e) => e.id));
+    // Group entries: top-level = activities + root comments; replies are
+    // bucketed under their parent's id and rendered nested inside CommentCard.
+    // No orphan rescue needed: the timeline is fetched in full, so every
+    // reply's parent is always in the same array.
     const topLevel = timeline.filter(
-      (e) =>
-        e.type === "activity" ||
-        !e.parent_id ||
-        !idsInTimeline.has(e.parent_id),
+      (e) => e.type === "activity" || !e.parent_id,
     );
     const repliesByParent = new Map<string, TimelineEntry[]>();
     for (const e of timeline) {
-      if (e.type === "comment" && e.parent_id && idsInTimeline.has(e.parent_id)) {
+      if (e.type === "comment" && e.parent_id) {
         const list = repliesByParent.get(e.parent_id) ?? [];
         list.push(e);
         repliesByParent.set(e.parent_id, list);
       }
     }
+
+    // Pre-flatten each top-level comment's thread subtree (parent + every
+    // descendant in render order). Reuse the previous array reference when
+    // the thread is unchanged so unrelated CommentCards keep their memo.
+    const prevThreadReplies = prevThreadRepliesRef.current;
+    const threadReplies = new Map<string, TimelineEntry[]>();
+    for (const root of topLevel) {
+      if (root.type !== "comment") continue;
+      const fresh = collectThreadReplies(root.id, repliesByParent);
+      const previous = prevThreadReplies.get(root.id);
+      threadReplies.set(
+        root.id,
+        previous && shallowEqualEntries(previous, fresh) ? previous : fresh,
+      );
+    }
+    prevThreadRepliesRef.current = threadReplies;
 
     // Coalesce consecutive activities from the same actor + action.
     // - task_completed / task_failed: no time limit (these repeat across runs)
@@ -353,7 +415,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       }
     }
 
-    return { repliesByParent, groups };
+    return { threadReplies, groups };
   }, [timeline]);
 
   const {
@@ -1006,37 +1068,37 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               <TimelineSkeleton />
             ) : (
             <>
-            {hasMoreOlder && (
-              <div className="my-4 flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={fetchOlder}
-                  disabled={isFetchingOlder}
-                >
-                  <ChevronUp />
-                  {isFetchingOlder
-                    ? t(($) => $.timeline.loading)
-                    : t(($) => $.timeline.show_older)}
-                </Button>
-              </div>
-            )}
             <div className="mt-4 flex flex-col gap-3">
               {timelineView.groups.map((group) => {
                 if (group.type === "comment") {
                   const entry = group.entries[0]!;
+                  const isResolved = !!entry.resolved_at;
+                  const isExpanded = expandedResolved.has(entry.id);
+                  if (isResolved && !isExpanded) {
+                    return (
+                      <div key={entry.id} id={`comment-${entry.id}`}>
+                        <ResolvedThreadBar
+                          entry={entry}
+                          replies={timelineView.threadReplies.get(entry.id) ?? EMPTY_REPLIES}
+                          onExpand={() => toggleResolvedExpand(entry.id, true)}
+                        />
+                      </div>
+                    );
+                  }
                   return (
                     <div key={entry.id} id={`comment-${entry.id}`}>
                       <CommentCard
                         issueId={id}
                         entry={entry}
-                        allReplies={timelineView.repliesByParent}
+                        replies={timelineView.threadReplies.get(entry.id) ?? EMPTY_REPLIES}
                         currentUserId={user?.id}
                         canModerate={canModerateComments}
                         onReply={submitReply}
                         onEdit={editComment}
                         onDelete={deleteComment}
                         onToggleReaction={handleToggleReaction}
+                        onResolveToggle={handleResolveToggle}
+                        onCollapseResolved={isResolved ? () => toggleResolvedExpand(entry.id, false) : undefined}
                         highlightedCommentId={highlightedId}
                       />
                     </div>
@@ -1100,37 +1162,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 );
               })}
             </div>
-            {(hasMoreNewer || !isAtLatest) && (
-              <div className="mt-4 flex items-center justify-center gap-2">
-                {hasMoreNewer && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={fetchNewer}
-                    disabled={isFetchingNewer}
-                  >
-                    <ChevronDown />
-                    {isFetchingNewer
-                      ? t(($) => $.timeline.loading)
-                      : t(($) => $.timeline.show_newer)}
-                  </Button>
-                )}
-                {!isAtLatest && (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={jumpToLatest}
-                  >
-                    <ArrowDownToLine />
-                    {newEntriesBelowCount > 0
-                      ? t(($) => $.timeline.jump_to_latest_with_count, {
-                          count: newEntriesBelowCount,
-                        })
-                      : t(($) => $.timeline.jump_to_latest)}
-                  </Button>
-                )}
-              </div>
-            )}
             </>
             )}
 
