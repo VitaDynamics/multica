@@ -75,14 +75,27 @@ func NewEmailService() *EmailService {
 
 // sendSMTP delivers an HTML email via an SMTP server.
 // Supports unauthenticated relay (SMTP_USERNAME empty) and authenticated SMTP.
-// Upgrades to STARTTLS when advertised by the server.
+// Port 465 dials with implicit TLS (SMTPS); other ports start in plaintext and
+// upgrade to STARTTLS when advertised by the server.
 // Set SMTP_TLS_INSECURE=true for self-signed or private CA certificates.
 func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	addr := net.JoinHostPort(s.smtpHost, s.smtpPort)
+	tlsCfg := &tls.Config{
+		ServerName:         s.smtpHost,
+		InsecureSkipVerify: s.smtpTLSInsecure, //nolint:gosec // opt-in via SMTP_TLS_INSECURE=true
+		MinVersion:         tls.VersionTLS12,
+	}
 
 	// Bounded dial + whole-session deadline: prevents a blackholed SMTP server
 	// from hanging the auth handler (or a background goroutine) indefinitely.
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	var conn net.Conn
+	var err error
+	if s.smtpPort == "465" {
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+	}
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)
 	}
@@ -98,14 +111,12 @@ func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	}
 	defer c.Close()
 
-	// STARTTLS if advertised — refreshes the extension list for 8BITMIME check below.
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		tlsCfg := &tls.Config{
-			ServerName:         s.smtpHost,
-			InsecureSkipVerify: s.smtpTLSInsecure, //nolint:gosec // opt-in via SMTP_TLS_INSECURE=true
-		}
-		if err = c.StartTLS(tlsCfg); err != nil {
-			return fmt.Errorf("smtp starttls: %w", err)
+	// STARTTLS if advertised (skip when already on implicit-TLS port 465).
+	if s.smtpPort != "465" {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err = c.StartTLS(tlsCfg); err != nil {
+				return fmt.Errorf("smtp starttls: %w", err)
+			}
 		}
 	}
 
