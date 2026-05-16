@@ -38,9 +38,6 @@ func NewEmailService() *EmailService {
 	if from == "" {
 		from = "noreply@multica.ai"
 	}
-	if smtpFrom := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")); smtpFrom != "" {
-		from = smtpFrom
-	}
 
 	smtpHost := strings.TrimSpace(os.Getenv("SMTP_HOST"))
 	smtpPort := strings.TrimSpace(os.Getenv("SMTP_PORT"))

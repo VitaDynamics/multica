@@ -1,7 +1,6 @@
 package service
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -181,27 +180,3 @@ func TestBuildInvitationParams_ToAndFromPassedThrough(t *testing.T) {
 	}
 }
 
-func TestNewEmailService_SMTPFromEmailOverridesResendFrom(t *testing.T) {
-	oldEnv := os.Environ()
-	for _, kv := range oldEnv {
-		parts := strings.SplitN(kv, "=", 2)
-		key := parts[0]
-		if strings.HasPrefix(key, "RESEND_") || strings.HasPrefix(key, "SMTP_") {
-			t.Setenv(key, "")
-		}
-	}
-
-	t.Setenv("RESEND_FROM_EMAIL", "noreply@multica.ai")
-	t.Setenv("SMTP_HOST", "smtp.feishu.cn")
-	t.Setenv("SMTP_USERNAME", "developer@vita.cn")
-	t.Setenv("SMTP_PASSWORD", "secret")
-	t.Setenv("SMTP_FROM_EMAIL", "developer@vita.cn")
-
-	svc := NewEmailService()
-	if svc.smtpHost != "smtp.feishu.cn" {
-		t.Fatalf("smtpHost = %q", svc.smtpHost)
-	}
-	if svc.fromEmail != "developer@vita.cn" {
-		t.Fatalf("fromEmail = %q", svc.fromEmail)
-	}
-}
