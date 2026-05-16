@@ -181,40 +181,6 @@ func TestBuildInvitationParams_ToAndFromPassedThrough(t *testing.T) {
 	}
 }
 
-func TestSMTPConfigFromEnv_MissingRequiredValuesReturnsNil(t *testing.T) {
-	t.Setenv("SMTP_HOST", "")
-	t.Setenv("SMTP_USERNAME", "")
-	t.Setenv("SMTP_PASSWORD", "")
-
-	if got := smtpConfigFromEnv(); got != nil {
-		t.Fatalf("expected nil config, got %#v", got)
-	}
-}
-
-func TestSMTPConfigFromEnv_UsesDefaultsAndParsesValues(t *testing.T) {
-	t.Setenv("SMTP_HOST", "smtp.feishu.cn")
-	t.Setenv("SMTP_USERNAME", "developer@vita.cn")
-	t.Setenv("SMTP_PASSWORD", "secret")
-	t.Setenv("SMTP_PORT", "")
-
-	got := smtpConfigFromEnv()
-	if got == nil {
-		t.Fatal("expected smtp config")
-	}
-	if got.host != "smtp.feishu.cn" {
-		t.Fatalf("host = %q", got.host)
-	}
-	if got.username != "developer@vita.cn" {
-		t.Fatalf("username = %q", got.username)
-	}
-	if got.password != "secret" {
-		t.Fatalf("password = %q", got.password)
-	}
-	if got.port != 587 {
-		t.Fatalf("port = %d", got.port)
-	}
-}
-
 func TestNewEmailService_SMTPFromEmailOverridesResendFrom(t *testing.T) {
 	oldEnv := os.Environ()
 	for _, kv := range oldEnv {
@@ -232,8 +198,8 @@ func TestNewEmailService_SMTPFromEmailOverridesResendFrom(t *testing.T) {
 	t.Setenv("SMTP_FROM_EMAIL", "developer@vita.cn")
 
 	svc := NewEmailService()
-	if svc.smtp == nil {
-		t.Fatal("expected smtp config")
+	if svc.smtpHost != "smtp.feishu.cn" {
+		t.Fatalf("smtpHost = %q", svc.smtpHost)
 	}
 	if svc.fromEmail != "developer@vita.cn" {
 		t.Fatalf("fromEmail = %q", svc.fromEmail)
