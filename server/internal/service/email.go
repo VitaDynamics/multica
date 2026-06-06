@@ -30,6 +30,8 @@ type EmailService struct {
 	smtpUsername    string
 	smtpPassword    string
 	smtpTLSInsecure bool
+	smtpTLSImplicit bool
+	smtpEHLOName    string
 }
 
 func NewEmailService() *EmailService {
@@ -48,6 +50,39 @@ func NewEmailService() *EmailService {
 	smtpPassword := os.Getenv("SMTP_PASSWORD")
 	smtpTLSInsecure := os.Getenv("SMTP_TLS_INSECURE") == "true"
 
+	// EHLO/HELO name, only relevant on the SMTP relay send path. net/smtp defaults
+	// to "localhost", which strict relays (e.g. smtp-relay.gmail.com) reject from a
+	// public source. Fall back to the machine hostname when SMTP_EHLO_NAME is unset.
+	// Resolved only in SMTP mode so the Resend/DEV paths never touch os.Hostname()
+	// or emit its failure log.
+	var smtpEHLOName string
+	if smtpHost != "" {
+		smtpEHLOName = strings.TrimSpace(os.Getenv("SMTP_EHLO_NAME"))
+		if smtpEHLOName == "" {
+			hostname, hostErr := os.Hostname()
+			if hostErr != nil {
+				// Empty name makes sendSMTP skip Hello() and fall back to net/smtp's
+				// lazy "localhost" — which strict relays reject. Surface it so operators
+				// know to set SMTP_EHLO_NAME explicitly.
+				fmt.Printf("EmailService: os.Hostname() failed (%v); SMTP EHLO falls back to \"localhost\" — set SMTP_EHLO_NAME for strict relays\n", hostErr)
+			}
+			smtpEHLOName = hostname
+		}
+	}
+
+	// SMTP_TLS=implicit forces an immediate TLS handshake on connect (SMTPS).
+	// Required by providers like Aliyun enterprise mail that only offer port 465
+	// SSL and do not advertise STARTTLS. Default (empty / "starttls") preserves
+	// the prior STARTTLS-upgrade behavior.
+	smtpTLSMode := strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_TLS")))
+	smtpTLSImplicit := smtpTLSMode == "implicit" || smtpTLSMode == "smtps" || smtpTLSMode == "ssl"
+	if smtpTLSMode == "" && smtpPort == "465" {
+		smtpTLSImplicit = true
+	}
+	if smtpTLSMode != "" && !smtpTLSImplicit && smtpTLSMode != "starttls" {
+		fmt.Printf("EmailService: SMTP_TLS=%q not recognized, falling back to starttls\n", smtpTLSMode)
+	}
+
 	var client *resend.Client
 	if apiKey != "" {
 		client = resend.NewClient(apiKey)
@@ -55,7 +90,11 @@ func NewEmailService() *EmailService {
 
 	switch {
 	case smtpHost != "":
-		fmt.Printf("EmailService: SMTP relay %s:%s from=%s\n", smtpHost, smtpPort, from)
+		tlsLabel := "starttls"
+		if smtpTLSImplicit {
+			tlsLabel = "implicit-tls"
+		}
+		fmt.Printf("EmailService: SMTP relay %s:%s (%s) from=%s\n", smtpHost, smtpPort, tlsLabel, from)
 	case client != nil:
 		fmt.Printf("EmailService: Resend API from=%s\n", from)
 	default:
@@ -70,13 +109,15 @@ func NewEmailService() *EmailService {
 		smtpUsername:    smtpUsername,
 		smtpPassword:    smtpPassword,
 		smtpTLSInsecure: smtpTLSInsecure,
+		smtpTLSImplicit: smtpTLSImplicit,
+		smtpEHLOName:    smtpEHLOName,
 	}
 }
 
 // sendSMTP delivers an HTML email via an SMTP server.
 // Supports unauthenticated relay (SMTP_USERNAME empty) and authenticated SMTP.
-// Port 465 dials with implicit TLS (SMTPS); other ports start in plaintext and
-// upgrade to STARTTLS when advertised by the server.
+// SMTP_TLS=implicit (or port 465) dials with implicit TLS (SMTPS); otherwise the
+// connection starts in plaintext and upgrades to STARTTLS when advertised.
 // Set SMTP_TLS_INSECURE=true for self-signed or private CA certificates.
 func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	addr := net.JoinHostPort(s.smtpHost, s.smtpPort)
@@ -90,7 +131,7 @@ func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	// from hanging the auth handler (or a background goroutine) indefinitely.
 	var conn net.Conn
 	var err error
-	if s.smtpPort == "465" {
+	if s.smtpTLSImplicit {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsCfg)
 	} else {
@@ -111,8 +152,18 @@ func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	}
 	defer c.Close()
 
-	// STARTTLS if advertised (skip when already on implicit-TLS port 465).
-	if s.smtpPort != "465" {
+	// Greet with a real hostname before any other command, else net/smtp lazily
+	// EHLOs "localhost" — which strict relays drop, surfacing as an opaque EOF on
+	// a later command rather than at the EHLO itself.
+	if s.smtpEHLOName != "" {
+		if err = c.Hello(s.smtpEHLOName); err != nil {
+			return fmt.Errorf("smtp EHLO %s: %w", s.smtpEHLOName, err)
+		}
+	}
+
+	// STARTTLS upgrade only makes sense when the underlying connection is still
+	// plaintext. Skip when we already dialed with implicit TLS.
+	if !s.smtpTLSImplicit {
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err = c.StartTLS(tlsCfg); err != nil {
 				return fmt.Errorf("smtp starttls: %w", err)

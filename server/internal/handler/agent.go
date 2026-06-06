@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -165,27 +167,27 @@ type AgentTaskResponse struct {
 	// as `## Workspace Context` so every agent running in this workspace —
 	// regardless of issue / chat / autopilot / quick-create — sees the same
 	// shared context. Empty when the workspace owner hasn't set it.
-	WorkspaceContext        string                `json:"workspace_context,omitempty"`
-	Status                  string                `json:"status"`
-	Priority                int32                 `json:"priority"`
-	DispatchedAt            *string               `json:"dispatched_at"`
-	StartedAt               *string               `json:"started_at"`
-	CompletedAt             *string               `json:"completed_at"`
-	Result                  any                   `json:"result"`
-	Error                   *string               `json:"error"`
-	FailureReason           string                `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
-	Attempt                 int32                 `json:"attempt"`
-	MaxAttempts             int32                 `json:"max_attempts"`
-	ParentTaskID            *string               `json:"parent_task_id,omitempty"`
-	Agent                   *TaskAgentData        `json:"agent,omitempty"`
-	Repos                   []RepoData            `json:"repos,omitempty"`
-	ProjectID               string                `json:"project_id,omitempty"`        // issue's project, when present
-	ProjectTitle            string                `json:"project_title,omitempty"`     // for surfacing in agent context
-	ProjectResources        []ProjectResourceData `json:"project_resources,omitempty"` // resources attached to the project
-	CreatedAt               string                `json:"created_at"`
-	PriorSessionID          string                `json:"prior_session_id,omitempty"`          // session ID from a previous task on same issue
-	PriorWorkDir            string                `json:"prior_work_dir,omitempty"`            // work_dir from a previous task on same issue
-	WorkDir                 string                `json:"work_dir,omitempty"`                  // local working directory pinned for this task; populated once the daemon reports it
+	WorkspaceContext string                `json:"workspace_context,omitempty"`
+	Status           string                `json:"status"`
+	Priority         int32                 `json:"priority"`
+	DispatchedAt     *string               `json:"dispatched_at"`
+	StartedAt        *string               `json:"started_at"`
+	CompletedAt      *string               `json:"completed_at"`
+	Result           any                   `json:"result"`
+	Error            *string               `json:"error"`
+	FailureReason    string                `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
+	Attempt          int32                 `json:"attempt"`
+	MaxAttempts      int32                 `json:"max_attempts"`
+	ParentTaskID     *string               `json:"parent_task_id,omitempty"`
+	Agent            *TaskAgentData        `json:"agent,omitempty"`
+	Repos            []RepoData            `json:"repos,omitempty"`
+	ProjectID        string                `json:"project_id,omitempty"`        // issue's project, when present
+	ProjectTitle     string                `json:"project_title,omitempty"`     // for surfacing in agent context
+	ProjectResources []ProjectResourceData `json:"project_resources,omitempty"` // resources attached to the project
+	CreatedAt        string                `json:"created_at"`
+	PriorSessionID   string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir     string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	WorkDir          string                `json:"work_dir,omitempty"`         // local working directory pinned for this task; populated once the daemon reports it
 	// RelativeWorkDir is a privacy-safe display form of WorkDir intended for
 	// the UI. For standard tasks it strips the daemon's workspaces root so
 	// the user sees `<wsUUID>/<taskShort>/workdir`; for local_directory
@@ -196,26 +198,29 @@ type AgentTaskResponse struct {
 	// when WorkDir is empty, or when stripping leaves nothing. See
 	// relativeWorkDir() for the full rules. Older clients can still read
 	// WorkDir directly; newer UIs should prefer RelativeWorkDir.
-	RelativeWorkDir         string                `json:"relative_work_dir,omitempty"`
-	TriggerCommentID        *string               `json:"trigger_comment_id,omitempty"`        // comment that triggered this task
-	TriggerCommentContent   string                `json:"trigger_comment_content,omitempty"`   // content of the triggering comment
-	TriggerSummary          *string               `json:"trigger_summary,omitempty"`           // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
-	TriggerAuthorType       string                `json:"trigger_author_type,omitempty"`       // "agent" or "member" — author kind of the triggering comment
-	TriggerAuthorName       string                `json:"trigger_author_name,omitempty"`       // display name of the triggering comment author
-	ChatSessionID           string                `json:"chat_session_id,omitempty"`           // non-empty for chat tasks
-	ChatMessage             string                `json:"chat_message,omitempty"`              // user message for chat tasks
-	ChatMessageAttachments  []ChatAttachmentMeta  `json:"chat_message_attachments,omitempty"`  // attachments on the user message — agent calls `multica attachment download <id>` per entry
-	AutopilotRunID          string                `json:"autopilot_run_id,omitempty"`          // non-empty for autopilot-spawned tasks
-	AutopilotID             string                `json:"autopilot_id,omitempty"`              // autopilot that spawned this task
-	AutopilotTitle          string                `json:"autopilot_title,omitempty"`           // autopilot title used as task context
-	AutopilotDescription    string                `json:"autopilot_description,omitempty"`     // autopilot description used as task prompt
-	AutopilotSource         string                `json:"autopilot_source,omitempty"`          // manual, schedule, webhook, or api
-	AutopilotTriggerPayload json.RawMessage       `json:"autopilot_trigger_payload,omitempty"` // optional trigger payload for webhook/api runs
-	QuickCreatePrompt       string                `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
-	SquadID                 string                `json:"squad_id,omitempty"`                  // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
-	SquadName               string                `json:"squad_name,omitempty"`                // display name for the picker squad
-	ParentIssueID           string                `json:"parent_issue_id,omitempty"`           // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier   string                `json:"parent_issue_identifier,omitempty"`   // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	RelativeWorkDir         string               `json:"relative_work_dir,omitempty"`
+	TriggerCommentID        *string              `json:"trigger_comment_id,omitempty"`        // comment that triggered this task
+	TriggerThreadID         string               `json:"trigger_thread_id,omitempty"`         // root comment ID for the triggering thread
+	TriggerCommentContent   string               `json:"trigger_comment_content,omitempty"`   // content of the triggering comment
+	TriggerSummary          *string              `json:"trigger_summary,omitempty"`           // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
+	TriggerAuthorType       string               `json:"trigger_author_type,omitempty"`       // "agent" or "member" — author kind of the triggering comment
+	TriggerAuthorName       string               `json:"trigger_author_name,omitempty"`       // display name of the triggering comment author
+	NewCommentCount         int                  `json:"new_comment_count,omitempty"`         // trigger-thread comments since last run; excludes injected trigger + own comments; omitempty so old daemons ignore it
+	NewCommentsSince        string               `json:"new_comments_since,omitempty"`        // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it
+	ChatSessionID           string               `json:"chat_session_id,omitempty"`           // non-empty for chat tasks
+	ChatMessage             string               `json:"chat_message,omitempty"`              // user message for chat tasks
+	ChatMessageAttachments  []ChatAttachmentMeta `json:"chat_message_attachments,omitempty"`  // attachments on the user message — agent calls `multica attachment download <id>` per entry
+	AutopilotRunID          string               `json:"autopilot_run_id,omitempty"`          // non-empty for autopilot-spawned tasks
+	AutopilotID             string               `json:"autopilot_id,omitempty"`              // autopilot that spawned this task
+	AutopilotTitle          string               `json:"autopilot_title,omitempty"`           // autopilot title used as task context
+	AutopilotDescription    string               `json:"autopilot_description,omitempty"`     // autopilot description used as task prompt
+	AutopilotSource         string               `json:"autopilot_source,omitempty"`          // manual, schedule, webhook, or api
+	AutopilotTriggerPayload json.RawMessage      `json:"autopilot_trigger_payload,omitempty"` // optional trigger payload for webhook/api runs
+	QuickCreatePrompt       string               `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
+	SquadID                 string               `json:"squad_id,omitempty"`                  // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
+	SquadName               string               `json:"squad_name,omitempty"`                // display name for the picker squad
+	ParentIssueID           string               `json:"parent_issue_id,omitempty"`           // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier   string               `json:"parent_issue_identifier,omitempty"`   // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -532,20 +537,9 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	// AgentSkillSummary only needs id/name/description, and reading large
 	// SKILL.md bodies just to discard them is the exact regression we fixed
 	// in #2174.
-	skills, err := h.Queries.ListAgentSkillSummaries(r.Context(), agent.ID)
-	if err != nil {
+	if err := h.attachAgentSkills(r.Context(), &resp, agent.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
 		return
-	}
-	if len(skills) > 0 {
-		resp.Skills = make([]AgentSkillSummary, len(skills))
-		for i, s := range skills {
-			resp.Skills[i] = AgentSkillSummary{
-				ID:          uuidToString(s.ID),
-				Name:        s.Name,
-				Description: s.Description,
-			}
-		}
 	}
 
 	// mcp_config redaction (custom_env was removed from this response shape
@@ -754,7 +748,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	actorType, actorID := h.resolveActor(r, ownerID, workspaceID)
 	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 
-	h.Analytics.Capture(analytics.AgentCreated(
+	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.AgentCreated(
 		ownerID,
 		workspaceID,
 		uuidToString(created.ID),
@@ -1081,12 +1075,46 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := agentToResponse(updated)
+	// agentToResponse always initialises Skills as []; junction-table rows
+	// are untouched by the SQL update, so we reload them here to keep the
+	// response (and the broadcast that mirrors it) in sync with reality.
+	// Without this, callers see "skills": [] after every metadata-only
+	// update and assume their bindings were cleared — see #3459.
+	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
+		slog.Warn("load agent skills after update failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// attachAgentSkills populates resp.Skills from the agent_skill junction
+// table for the given agent. agentToResponse zeros the field; mutation
+// handlers that don't refresh it would otherwise serve a misleading
+// empty array on every successful response (#3459).
+func (h *Handler) attachAgentSkills(ctx context.Context, resp *AgentResponse, agentID pgtype.UUID) error {
+	skills, err := h.Queries.ListAgentSkillSummaries(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if len(skills) == 0 {
+		return nil
+	}
+	out := make([]AgentSkillSummary, len(skills))
+	for i, s := range skills {
+		out[i] = AgentSkillSummary{
+			ID:          uuidToString(s.ID),
+			Name:        s.Name,
+			Description: s.Description,
+		}
+	}
+	resp.Skills = out
+	return nil
 }
 
 // resolveAgentProvider returns the provider name for the runtime that
@@ -1142,6 +1170,11 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	wsID := uuidToString(archived.WorkspaceID)
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := agentToResponse(archived)
+	if err := h.attachAgentSkills(r.Context(), &resp, archived.ID); err != nil {
+		slog.Warn("load agent skills after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
 	actorType, actorID := h.resolveActor(r, userID, wsID)
 	h.publish(protocol.EventAgentArchived, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 	redactAgentResponseForActor(&resp, actorType)
@@ -1172,6 +1205,11 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 	wsID := uuidToString(restored.WorkspaceID)
 	slog.Info("agent restored", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := agentToResponse(restored)
+	if err := h.attachAgentSkills(r.Context(), &resp, restored.ID); err != nil {
+		slog.Warn("load agent skills after restore failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+		return
+	}
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, wsID)
 	h.publish(protocol.EventAgentRestored, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
