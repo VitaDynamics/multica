@@ -1,0 +1,13 @@
+# Local-only postgres image: pgvector + pg_cron.
+#
+# v0.3.5+ migrates Usage dashboards onto `task_usage_hourly`, which needs
+# a periodic rollup tick. We drive it with pg_cron in this self-host
+# deployment (see docker-compose.selfhost.yml `command:` block).
+#
+# Do NOT publish this image — it's a thin local extension of the upstream
+# pgvector image, with a debian repo install of postgresql-17-cron.
+FROM pgvector/pgvector:pg17
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-17-cron \
+ && rm -rf /var/lib/apt/lists/*
