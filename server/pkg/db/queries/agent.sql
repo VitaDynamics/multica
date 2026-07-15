@@ -1,11 +1,11 @@
 -- name: ListAgents :many
 SELECT * FROM agent
-WHERE workspace_id = $1 AND archived_at IS NULL
+WHERE workspace_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY created_at ASC;
 
 -- name: ListAllAgents :many
 SELECT * FROM agent
-WHERE workspace_id = $1
+WHERE workspace_id = $1 AND kind = 'user'
 ORDER BY created_at ASC;
 
 -- name: GetAgent :one
@@ -14,7 +14,7 @@ WHERE id = $1;
 
 -- name: GetAgentInWorkspace :one
 SELECT * FROM agent
-WHERE id = $1 AND workspace_id = $2;
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 
 -- name: CreateAgent :one
 INSERT INTO agent (
@@ -30,6 +30,29 @@ INSERT INTO agent (
     COALESCE(sqlc.narg('permission_mode'), 'private')
 )
 RETURNING *;
+
+-- name: CreateAgentBuilder :one
+-- One hidden builder agent per creation session. Keeping the execution carrier
+-- session-scoped freezes its model/runtime configuration when multiple builder
+-- flows are open concurrently, while `kind = 'system'` keeps it out of normal
+-- agent lists and assignment surfaces.
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+    visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+    custom_env, custom_args, model, kind, system_key
+) VALUES (
+    @workspace_id, @name, '', @runtime_mode, '{}'::jsonb, @runtime_id,
+    'private', 'private', 1, @owner_id, @instructions,
+    '{}'::jsonb, '[]'::jsonb, sqlc.narg('model'), 'system', @system_key
+)
+RETURNING *;
+
+-- name: DeleteSystemAgentByID :exec
+-- Builder sessions own their hidden execution agent. Deleting the session
+-- removes that carrier and its task rows; the kind guard prevents this cleanup
+-- path from ever deleting a user-authored agent.
+DELETE FROM agent
+WHERE id = $1 AND kind = 'system' AND system_key LIKE 'agent_builder:%';
 
 -- name: UpdateAgent :one
 -- composio_toolkit_allowlist is set wholesale: the API layer is responsible
@@ -132,7 +155,7 @@ RETURNING *;
 -- and so the cascade endpoint's expected_active_agent_ids check has a stable
 -- snapshot to compare against. Ordered by name for a deterministic display.
 SELECT * FROM agent
-WHERE runtime_id = $1 AND archived_at IS NULL
+WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC;
 
 -- name: ListActiveAgentsByRuntimeForUpdate :many
@@ -145,7 +168,7 @@ ORDER BY name ASC;
 -- that the set we compared against expected_active_agent_ids is exactly
 -- the set ArchiveAgentsByIDs will operate on — no race window.
 SELECT * FROM agent
-WHERE runtime_id = $1 AND archived_at IS NULL
+WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE;
 
@@ -299,9 +322,9 @@ RETURNING *;
 -- name: CancelAgentTasksByIssue :many
 -- Cancels every active task on the issue and returns the affected rows so the
 -- caller can reconcile each agent's status and broadcast task:cancelled events
--- (#1587). Prior :exec form silently dropped that info, so internal cancel
--- paths (issue status flips to cancelled/done, etc.) left agents stuck at
--- status="working" with no self-correction.
+-- (#1587). Prior :exec form silently dropped that info, leaving agents stuck at
+-- status="working" with no self-correction. Only issue-deletion cleanup calls
+-- this now; a status flip to cancelled/done no longer does (MUL-4465).
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
@@ -467,6 +490,30 @@ WHERE id = (
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+
+-- name: ReclaimStaleDispatchedTasksForRuntimes :many
+-- Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
+-- up to @max_tasks tasks across the whole runtime set in one round trip, so a
+-- machine-level batch claim recovers lost-response dispatches for every runtime
+-- it hosts without one query per runtime. Same eligibility as the singular
+-- query (dispatched, never started, past the recovery window, expired/absent
+-- prepare lease) and the same dispatched_at refresh; only the runtime filter
+-- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
+UPDATE agent_task_queue
+SET dispatched_at = now(),
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+WHERE id IN (
+    SELECT atq.id FROM agent_task_queue atq
+    WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
+      AND atq.status = 'dispatched'
+      AND atq.started_at IS NULL
+      AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
+      AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
+    ORDER BY atq.priority DESC, atq.dispatched_at ASC
+    LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
 )
 RETURNING *;
@@ -904,6 +951,31 @@ ORDER BY priority DESC, created_at ASC;
 UPDATE agent_task_queue
 SET status = 'queued'
 WHERE runtime_id = @runtime_id
+  AND status = 'deferred'
+  AND fire_at <= now()
+RETURNING *;
+
+-- name: ListQueuedClaimCandidatesByRuntimes :many
+-- Batch variant of ListQueuedClaimCandidatesByRuntime (MUL-4257): returns
+-- queued claim candidates across every runtime_id in the input set in ONE round
+-- trip, so a daemon can list candidates for all of its runtimes with a single
+-- query instead of one per runtime. Ordering matches the singular query
+-- (priority, then FIFO) so the batch claim loop keeps the same fairness. The
+-- runtime_id filter is served by the partial index
+-- idx_agent_task_queue_claim_candidates; the cross-runtime ORDER BY still needs
+-- a sort step (each runtime's slice is index-ordered, but merging several
+-- runtimes' rows into one priority/FIFO order is not). The per-machine
+-- candidate set is small, so this is cheap in practice.
+SELECT * FROM agent_task_queue
+WHERE runtime_id = ANY(@runtime_ids::uuid[]) AND status = 'queued'
+ORDER BY priority DESC, created_at ASC;
+
+-- name: PromoteDueDeferredTasksForRuntimes :many
+-- Batch variant of PromoteDueDeferredTasksForRuntime (MUL-4257): promotes all
+-- due deferred tasks across the runtime set in one UPDATE.
+UPDATE agent_task_queue
+SET status = 'queued'
+WHERE runtime_id = ANY(@runtime_ids::uuid[])
   AND status = 'deferred'
   AND fire_at <= now()
 RETURNING *;
