@@ -240,6 +240,63 @@ func TestLayerCustomEnvAndHermesHome(t *testing.T) {
 	}
 }
 
+func TestConfigureCodexTaskShellEnvironment(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-Codex runtime is unchanged", func(t *testing.T) {
+		t.Parallel()
+		codexHome := t.TempDir()
+		if err := configureCodexTaskShellEnvironment("claude", codexHome, nil, nil, slog.Default()); err != nil {
+			t.Fatalf("configureCodexTaskShellEnvironment: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); !os.IsNotExist(err) {
+			t.Fatalf("non-Codex runtime unexpectedly wrote config.toml: %v", err)
+		}
+	})
+
+	t.Run("Codex policy uses platform and explicit task environment", func(t *testing.T) {
+		t.Parallel()
+		codexHome := t.TempDir()
+		inherited := []string{
+			"SystemRoot=C:\\Windows",
+			"USERPROFILE=C:\\Users\\test",
+			"OPENAI_API_KEY=host-secret",
+			"MULTICA_LLM_API_KEY=daemon-secret",
+		}
+		agentEnv := map[string]string{
+			"CUSTOM_FLAG":        "enabled",
+			"MULTICA_SERVER_URL": "https://task.example",
+			"MULTICA_TOKEN":      "mat_task",
+		}
+		if err := configureCodexTaskShellEnvironment("codex", codexHome, inherited, agentEnv, slog.Default()); err != nil {
+			t.Fatalf("configureCodexTaskShellEnvironment: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+		if err != nil {
+			t.Fatalf("read config.toml: %v", err)
+		}
+		config := string(data)
+		for _, want := range []string{"SystemRoot", "USERPROFILE", "CUSTOM_FLAG", "MULTICA_SERVER_URL", "MULTICA_TOKEN"} {
+			if !strings.Contains(config, want) {
+				t.Errorf("config.toml missing %q:\n%s", want, config)
+			}
+		}
+		for _, unwanted := range []string{"OPENAI_API_KEY", "MULTICA_LLM_API_KEY", "MULTICA_*"} {
+			if strings.Contains(config, unwanted) {
+				t.Errorf("config.toml unexpectedly contains %q:\n%s", unwanted, config)
+			}
+		}
+	})
+
+	t.Run("Codex without task home fails closed", func(t *testing.T) {
+		t.Parallel()
+		err := configureCodexTaskShellEnvironment("codex", "", nil, map[string]string{"MULTICA_TOKEN": "mat_task"}, slog.Default())
+		if err == nil || !strings.Contains(err.Error(), "CODEX_HOME is missing") {
+			t.Fatalf("error = %v, want missing CODEX_HOME", err)
+		}
+	})
+}
+
 func TestTaskScopedAuthToken(t *testing.T) {
 	t.Parallel()
 
@@ -1115,6 +1172,56 @@ func newRepoReadyTestDaemon(t *testing.T, handler http.HandlerFunc) *Daemon {
 	return d
 }
 
+func TestGateCodexResumeToRolloutPresence(t *testing.T) {
+	t.Parallel()
+
+	// Seed a codex-home whose sessions dir holds exactly one rollout.
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	present := filepath.Join(codexHome, "sessions", "2026", "07", "13",
+		"rollout-2026-07-13T00-00-00-present-session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(present), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	if err := os.WriteFile(present, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		provider    string
+		sessionID   string
+		codexHome   string
+		wantSession string
+	}{
+		{name: "rollout present keeps resume", provider: "codex", sessionID: "present-session", codexHome: codexHome, wantSession: "present-session"},
+		{name: "rollout absent drops resume", provider: "codex", sessionID: "gone-session", codexHome: codexHome, wantSession: ""},
+		{name: "non-codex provider is a no-op", provider: "claude", sessionID: "present-session", codexHome: codexHome, wantSession: "present-session"},
+		{name: "empty codex home is a no-op", provider: "codex", sessionID: "present-session", codexHome: "", wantSession: "present-session"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := Task{PriorSessionID: tt.sessionID}
+			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: tt.sessionID != ""}
+
+			gateCodexResumeToRolloutPresence(&task, &taskCtx, tt.provider, tt.codexHome, slog.Default())
+
+			if task.PriorSessionID != tt.wantSession {
+				t.Fatalf("PriorSessionID = %q, want %q", task.PriorSessionID, tt.wantSession)
+			}
+			if taskCtx.PriorSessionResumed != (tt.wantSession != "") {
+				t.Fatalf("PriorSessionResumed = %v, want %v", taskCtx.PriorSessionResumed, tt.wantSession != "")
+			}
+			// A dropped resume (had a session, now cleared) must be surfaced to
+			// the user via the brief; a kept/no-op resume must not.
+			wantUnavailable := tt.sessionID != "" && tt.wantSession == ""
+			if taskCtx.PriorSessionResumeUnavailable != wantUnavailable {
+				t.Fatalf("PriorSessionResumeUnavailable = %v, want %v", taskCtx.PriorSessionResumeUnavailable, wantUnavailable)
+			}
+		})
+	}
+}
+
 func TestGateResumeToReusedWorkdir(t *testing.T) {
 	t.Parallel()
 
@@ -1176,8 +1283,106 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 			if taskCtx.PriorSessionResumed != (tt.wantSession != "") {
 				t.Fatalf("PriorSessionResumed = %v, want %v", taskCtx.PriorSessionResumed, tt.wantSession != "")
 			}
+			// A dropped resume (had a session, now cleared) must be surfaced to
+			// the user via the brief; a kept/no-op resume must not.
+			wantUnavailable := tt.sessionID != "" && tt.wantSession == ""
+			if taskCtx.PriorSessionResumeUnavailable != wantUnavailable {
+				t.Fatalf("PriorSessionResumeUnavailable = %v, want %v", taskCtx.PriorSessionResumeUnavailable, wantUnavailable)
+			}
 		})
 	}
+}
+
+// newCodexStoreGuardDaemon builds a Daemon with only the per-issue Codex session
+// store guard initialised — enough to exercise the reserve-vs-mark protocol.
+func newCodexStoreGuardDaemon() *Daemon {
+	d := &Daemon{
+		activeCodexStores:   map[string]int{},
+		deletingCodexStores: map[string]bool{},
+	}
+	d.activeCodexStoresCond = sync.NewCond(&d.activeCodexStoresMu)
+	return d
+}
+
+// A task that marks a store active before the GC reserves it must block the
+// deletion — this is exactly Elon's mark-then-delete interleaving, which the old
+// point-in-time active check allowed.
+func TestCodexStoreGuard_MarkBeforeReserveBlocksDeletion(t *testing.T) {
+	t.Parallel()
+	d := newCodexStoreGuardDaemon()
+	const store = "/stores/agent/issue"
+
+	d.markActiveCodexStore(store)
+	if _, ok := d.reserveCodexStoreForDeletion(store); ok {
+		t.Fatal("reserve must refuse a store a live task already holds")
+	}
+	d.unmarkActiveCodexStore(store)
+
+	commit, ok := d.reserveCodexStoreForDeletion(store)
+	if !ok {
+		t.Fatal("reserve should succeed once the store is inactive")
+	}
+	commit()
+}
+
+// The reverse interleaving: once the GC has reserved a store, a task's
+// markActive must block until the removal commits (so it never mounts a store
+// mid-removal), then proceed.
+func TestCodexStoreGuard_ReserveBlocksMarkUntilCommit(t *testing.T) {
+	t.Parallel()
+	d := newCodexStoreGuardDaemon()
+	const store = "/stores/agent/issue"
+
+	commit, ok := d.reserveCodexStoreForDeletion(store)
+	if !ok {
+		t.Fatal("reserve should succeed on an inactive store")
+	}
+
+	marked := make(chan struct{})
+	go func() {
+		d.markActiveCodexStore(store)
+		close(marked)
+	}()
+
+	select {
+	case <-marked:
+		t.Fatal("markActiveCodexStore must block while the store is reserved for deletion")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	commit()
+
+	select {
+	case <-marked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("markActiveCodexStore must proceed after the reservation is committed")
+	}
+	// The store is now active, so a fresh reserve must be refused.
+	if _, ok := d.reserveCodexStoreForDeletion(store); ok {
+		t.Fatal("store must be active after the blocked mark proceeds")
+	}
+}
+
+// Two GC passes cannot both reserve the same store; the second is refused until
+// the first commits.
+func TestCodexStoreGuard_SecondReserveRefusedWhileDeleting(t *testing.T) {
+	t.Parallel()
+	d := newCodexStoreGuardDaemon()
+	const store = "/stores/agent/issue"
+
+	commit, ok := d.reserveCodexStoreForDeletion(store)
+	if !ok {
+		t.Fatal("first reserve should succeed")
+	}
+	if _, ok := d.reserveCodexStoreForDeletion(store); ok {
+		t.Fatal("a second reserve must be refused while a removal is in flight")
+	}
+	commit()
+	commit2, ok := d.reserveCodexStoreForDeletion(store)
+	if !ok {
+		t.Fatal("reserve should succeed again after the prior removal committed")
+	}
+	commit2()
 }
 
 func TestExecuteAndDrain_ResumeFailureFallback(t *testing.T) {
@@ -1624,6 +1829,94 @@ func TestExecuteAndDrain_IdleWatchdog_FiresWhenNoMessageEverArrives(t *testing.T
 	}
 }
 
+func TestExecuteAndDrain_IdleWatchdog_UsesPerRunOverride(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 500 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	start := time.Now()
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{IdleWatchdogTimeout: 50 * time.Millisecond},
+		slog.Default(),
+		"t-idle-override",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q (err=%q)", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "50ms") {
+		t.Fatalf("expected error to report the per-run threshold, got %q", result.Error)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("per-run watchdog override did not fire promptly: %s", elapsed)
+	}
+}
+
+func TestExecuteAndDrain_IdleWatchdog_GlobalDisableWinsOverPerRunOverride(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{IdleWatchdogTimeout: 20 * time.Millisecond},
+		slog.Default(),
+		"t-idle-global-off",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "cancelled" {
+		t.Fatalf("global watchdog disable must win; got status=%q (err=%q)", result.Status, result.Error)
+	}
+}
+
+func TestExecuteAndDrain_IdleWatchdog_PerRunOverrideCannotExtendGlobalWindow(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{IdleWatchdogTimeout: 500 * time.Millisecond},
+		slog.Default(),
+		"t-idle-global-bound",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q (err=%q)", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "50ms") {
+		t.Fatalf("provider override must not extend the global threshold, got %q", result.Error)
+	}
+}
+
 func TestExecuteAndDrain_IdleWatchdog_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
 
@@ -1745,6 +2038,30 @@ func TestExecuteAndDrain_IdleWatchdog_DoesNotFireDuringInFlightToolCall(t *testi
 	}
 	if result.Status != "completed" {
 		t.Fatalf("expected status=completed, got %q (err=%q)", result.Status, result.Error)
+	}
+}
+
+func TestExecuteAndDrain_IdleWatchdog_PerRunOverrideStillUsesToolWindow(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 500 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 500 * time.Millisecond
+
+	result, _, err := d.executeAndDrain(
+		context.Background(),
+		longToolCallBackend{toolSilence: 200 * time.Millisecond},
+		"p",
+		agent.ExecOptions{IdleWatchdogTimeout: 50 * time.Millisecond},
+		slog.Default(),
+		"t-long-tool-override",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("per-run idle override must not replace the tool window; got status=%q (err=%q)", result.Status, result.Error)
 	}
 }
 
@@ -3211,5 +3528,140 @@ func TestHermesLaunchArgsAndEnvByScenario(t *testing.T) {
 	layerCustomEnvAndHermesHome(overlayEnv, customEnv, "/task/hermes-home", nil)
 	if overlayEnv["HERMES_HOME"] != "/task/hermes-home" {
 		t.Errorf("overlay task must redirect HERMES_HOME to the overlay, got %q", overlayEnv["HERMES_HOME"])
+	}
+}
+
+// TestHandleTask_AcksCancelAfterPollCancelled verifies the daemon posts
+// cancel-ack when the poll goroutine interrupts the run — by then
+// runner.run has returned, so the transcript flush is complete and the
+// server may settle its deferred chat finalization (#5219).
+func TestHandleTask_AcksCancelAfterPollCancelled(t *testing.T) {
+	t.Parallel()
+
+	var callOrder []string
+	var mu sync.Mutex
+	recordCall := func(name string) {
+		mu.Lock()
+		callOrder = append(callOrder, name)
+		mu.Unlock()
+	}
+
+	var statusCallCount atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+			recordCall("cancel-ack")
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			if statusCallCount.Add(1) == 1 {
+				recordCall("poll-status")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"status":"running"}`))
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		cancelPollInterval: 10 * time.Millisecond,
+	}
+
+	d.runner = taskRunnerFunc(func(runCtx context.Context, _ Task, _ string, _ int, _ *slog.Logger) (TaskResult, error) {
+		<-runCtx.Done()
+		return TaskResult{Status: "aborted"}, nil
+	})
+
+	task := Task{
+		ID:        "task-ack-poll",
+		RuntimeID: "rt-1",
+		IssueID:   "issue-ack-poll",
+		Agent:     &AgentData{Name: "test-agent"},
+	}
+
+	d.handleTask(context.Background(), task, 0)
+
+	mu.Lock()
+	order := make([]string, len(callOrder))
+	copy(order, callOrder)
+	mu.Unlock()
+
+	pollStatusIdx, ackIdx := -1, -1
+	for i, name := range order {
+		switch name {
+		case "poll-status":
+			pollStatusIdx = i
+		case "cancel-ack":
+			ackIdx = i
+		}
+	}
+	if pollStatusIdx == -1 {
+		t.Fatalf("poll goroutine never fired (order: %v)", order)
+	}
+	if ackIdx == -1 {
+		t.Fatalf("cancel-ack was never posted on the poll-cancelled path (order: %v)", order)
+	}
+	if ackIdx < pollStatusIdx {
+		t.Fatalf("cancel-ack before the poll observed the cancellation (order: %v)", order)
+	}
+}
+
+// TestHandleTask_AcksCancelOnPostRunStatusCheck verifies cancel-ack is also
+// posted when the cancellation is only discovered by the pre-completion
+// status check (the run finished before the poll noticed).
+func TestHandleTask_AcksCancelOnPostRunStatusCheck(t *testing.T) {
+	t.Parallel()
+
+	var ackCalls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+			ackCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		cancelPollInterval: time.Hour, // disable the poll path; exercise the post-run check
+	}
+
+	d.runner = taskRunnerFunc(func(_ context.Context, _ Task, _ string, _ int, _ *slog.Logger) (TaskResult, error) {
+		return TaskResult{Status: "completed"}, nil
+	})
+
+	task := Task{
+		ID:        "task-ack-postrun",
+		RuntimeID: "rt-1",
+		IssueID:   "issue-ack-postrun",
+		Agent:     &AgentData{Name: "test-agent"},
+	}
+
+	d.handleTask(context.Background(), task, 0)
+
+	if got := ackCalls.Load(); got != 1 {
+		t.Fatalf("cancel-ack calls = %d, want 1", got)
 	}
 }
