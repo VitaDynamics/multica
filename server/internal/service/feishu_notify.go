@@ -7,47 +7,117 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 )
 
-const feishuVerificationWebhook = "https://open.feishu.cn/open-apis/bot/v2/hook/068d3cb8-a7b6-426e-849b-b47920c62969"
+// Overridable in tests.
+var feishuBaseURL = "https://open.feishu.cn"
 
 var feishuHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
-// notifyFeishuVerificationCode mirrors a verification code to a Feishu bot.
-// Fire-and-forget: it spawns a goroutine and never returns errors. The caller's
-// email-send path must not be affected by webhook latency or failure.
+// notifyFeishuVerificationCode DMs a verification code to the Feishu user whose
+// account email matches the login email (receive_id_type=email). No-op unless
+// FEISHU_APP_ID and FEISHU_APP_SECRET are set. Fire-and-forget: it spawns a
+// goroutine and never returns errors. The caller's email-send path must not be
+// affected by Feishu latency or failure.
 func notifyFeishuVerificationCode(email, code string) {
+	if os.Getenv("FEISHU_APP_ID") == "" || os.Getenv("FEISHU_APP_SECRET") == "" {
+		return
+	}
 	go func() {
-		text := fmt.Sprintf("Multica 验证码 — email: %s, code: %s", email, code)
-		payload, err := json.Marshal(map[string]any{
-			"msg_type": "text",
-			"content":  map[string]string{"text": text},
-		})
-		if err != nil {
-			slog.Warn("feishu notify failed", "stage", "marshal", "error", err)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, feishuVerificationWebhook, bytes.NewReader(payload))
-		if err != nil {
-			slog.Warn("feishu notify failed", "stage", "build_request", "error", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := feishuHTTPClient.Do(req)
-		if err != nil {
-			slog.Warn("feishu notify failed", "stage", "do", "error", err)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			slog.Warn("feishu notify failed", "stage", "status", "status", resp.StatusCode)
+		if err := sendFeishuVerificationCode(email, code); err != nil {
+			slog.Warn("feishu notify failed", "error", err)
 		}
 	}()
+}
+
+func sendFeishuVerificationCode(email, code string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// ponytail: no token cache — send-code is rate-limited to 1/60s per email,
+	// add caching only if Feishu rate-limits the token endpoint.
+	token, err := feishuTenantAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("tenant_access_token: %w", err)
+	}
+
+	content, err := json.Marshal(map[string]string{
+		"text": fmt.Sprintf("Multica 登录验证码:%s(10 分钟内有效)", code),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal content: %w", err)
+	}
+	return feishuPostJSON(ctx, "/open-apis/im/v1/messages?receive_id_type=email", token, map[string]string{
+		"receive_id": email,
+		"msg_type":   "text",
+		"content":    string(content),
+	})
+}
+
+func feishuTenantAccessToken(ctx context.Context) (string, error) {
+	payload, err := json.Marshal(map[string]string{
+		"app_id":     os.Getenv("FEISHU_APP_ID"),
+		"app_secret": os.Getenv("FEISHU_APP_SECRET"),
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		feishuBaseURL+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := feishuHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	if body.Code != 0 {
+		return "", fmt.Errorf("feishu code %d: %s", body.Code, body.Msg)
+	}
+	return body.TenantAccessToken, nil
+}
+
+func feishuPostJSON(ctx context.Context, path, token string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, feishuBaseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := feishuHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return err
+	}
+	if body.Code != 0 {
+		return fmt.Errorf("feishu code %d: %s", body.Code, body.Msg)
+	}
+	return nil
 }

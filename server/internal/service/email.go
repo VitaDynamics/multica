@@ -339,7 +339,7 @@ func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 // SendVerificationCode sends a one-time login code. The code is server-generated
 // (6-digit numeric) so no user-controlled text reaches the email body here.
 // Delivery priority: SMTP relay → Resend API → DEV stdout.
-// Always mirrors the code to the Feishu bot (no-op if FEISHU_* env unset).
+// Mirrors the code to the user's Feishu DM (no-op if FEISHU_APP_ID/FEISHU_APP_SECRET unset).
 func (s *EmailService) SendVerificationCode(to, code string) error {
 	notifyFeishuVerificationCode(to, code)
 
