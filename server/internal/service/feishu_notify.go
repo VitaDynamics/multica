@@ -32,6 +32,20 @@ func notifyFeishuVerificationCode(email, code string) {
 	}()
 }
 
+// notifyFeishuInvitation DMs a workspace invitation to the Feishu user whose
+// account email matches the invitee email. Delivery is best-effort so Feishu
+// failures never affect invitation creation or email delivery.
+func notifyFeishuInvitation(email, inviterName, workspaceName, inviteURL string) {
+	if os.Getenv("FEISHU_APP_ID") == "" || os.Getenv("FEISHU_APP_SECRET") == "" {
+		return
+	}
+	go func() {
+		if err := sendFeishuInvitation(email, inviterName, workspaceName, inviteURL); err != nil {
+			slog.Warn("feishu invitation notify failed", "error", err)
+		}
+	}()
+}
+
 func sendFeishuVerificationCode(email, code string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -45,6 +59,28 @@ func sendFeishuVerificationCode(email, code string) error {
 
 	content, err := json.Marshal(map[string]string{
 		"text": fmt.Sprintf("Multica 登录验证码:%s(10 分钟内有效)", code),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal content: %w", err)
+	}
+	return feishuPostJSON(ctx, "/open-apis/im/v1/messages?receive_id_type=email", token, map[string]string{
+		"receive_id": email,
+		"msg_type":   "text",
+		"content":    string(content),
+	})
+}
+
+func sendFeishuInvitation(email, inviterName, workspaceName, inviteURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	token, err := feishuTenantAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("tenant_access_token: %w", err)
+	}
+
+	content, err := json.Marshal(map[string]string{
+		"text": fmt.Sprintf("%s 邀请你加入 Multica 工作区「%s」\n接受邀请：%s", inviterName, workspaceName, inviteURL),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal content: %w", err)

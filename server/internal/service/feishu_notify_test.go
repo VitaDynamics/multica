@@ -65,6 +65,55 @@ func TestSendFeishuVerificationCode(t *testing.T) {
 	}
 }
 
+func TestSendFeishuInvitation(t *testing.T) {
+	var gotMessage map[string]string
+	var gotAuth, gotQuery string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "t-abc"})
+		case "/open-apis/im/v1/messages":
+			gotAuth = r.Header.Get("Authorization")
+			gotQuery = r.URL.RawQuery
+			if err := json.NewDecoder(r.Body).Decode(&gotMessage); err != nil {
+				t.Errorf("decode message body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := feishuBaseURL
+	feishuBaseURL = srv.URL
+	defer func() { feishuBaseURL = oldBase }()
+	t.Setenv("FEISHU_APP_ID", "cli_test")
+	t.Setenv("FEISHU_APP_SECRET", "secret")
+
+	inviteURL := "https://multica.example/invite/inv-123"
+	if err := sendFeishuInvitation("user@example.com", "Alice", "Acme", inviteURL); err != nil {
+		t.Fatalf("sendFeishuInvitation: %v", err)
+	}
+
+	if gotAuth != "Bearer t-abc" {
+		t.Errorf("Authorization = %q, want Bearer t-abc", gotAuth)
+	}
+	if gotQuery != "receive_id_type=email" {
+		t.Errorf("query = %q, want receive_id_type=email", gotQuery)
+	}
+	if gotMessage["receive_id"] != "user@example.com" || gotMessage["msg_type"] != "text" {
+		t.Errorf("message = %v", gotMessage)
+	}
+	for _, want := range []string{"Alice", "Acme", inviteURL} {
+		if !strings.Contains(gotMessage["content"], want) {
+			t.Errorf("content missing %q: %q", want, gotMessage["content"])
+		}
+	}
+}
+
 func TestNotifyFeishuVerificationCodeNoopWithoutEnv(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request to %s", r.URL.Path)
@@ -78,4 +127,5 @@ func TestNotifyFeishuVerificationCodeNoopWithoutEnv(t *testing.T) {
 	t.Setenv("FEISHU_APP_SECRET", "")
 
 	notifyFeishuVerificationCode("user@example.com", "123456")
+	notifyFeishuInvitation("user@example.com", "Alice", "Acme", "https://multica.example/invite/inv-123")
 }

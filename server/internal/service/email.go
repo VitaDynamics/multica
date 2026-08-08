@@ -377,6 +377,8 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
 	}
 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
 
+	notifyFeishuInvitation(to, inviterName, workspaceName, inviteURL)
+
 	params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
 
 	if s.smtpHost != "" {
