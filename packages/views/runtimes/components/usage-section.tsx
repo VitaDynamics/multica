@@ -21,6 +21,7 @@ import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-sto
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import {
   formatTokens,
+  formatUsd,
   estimateCost,
   estimateCacheSavings,
   aggregateByDate,
@@ -114,11 +115,6 @@ function Segmented<T extends string | number>({
       ))}
     </div>
   );
-}
-
-function fmtMoney(n: number): string {
-  if (n >= 100) return `$${n.toFixed(0)}`;
-  return `$${n.toFixed(2)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +231,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
             <CurrencyNumberFlow
               value={totals.cost}
               locales={locales}
-              aria-label={fmtMoney(totals.cost)}
+              aria-label={formatUsd(totals.cost)}
             />
           }
           hint={
@@ -263,7 +259,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
             <CurrencyNumberFlow
               value={totals.cacheSavings}
               locales={locales}
-              aria-label={fmtMoney(totals.cacheSavings)}
+              aria-label={formatUsd(totals.cacheSavings)}
             />
           }
           accent={totals.cacheSavings > 0 ? "success" : "default"}
@@ -512,7 +508,7 @@ function EmptyChartState({ usage }: { usage: RuntimeUsage[] }) {
 
   return (
     <div className="flex aspect-[3/1] flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-muted/20 p-6 text-center">
-      <BarChart3 className="h-5 w-5 text-muted-foreground/50" />
+      <BarChart3 className="h-5 w-5 text-faint-foreground" />
       {!hasTokens ? (
         <p className="text-caption text-muted-foreground">
           {t(($) => $.usage.empty_no_usage)}
@@ -527,7 +523,7 @@ function EmptyChartState({ usage }: { usage: RuntimeUsage[] }) {
           <p className="font-mono text-micro text-foreground">
             {unmapped.join(", ")}
           </p>
-          <p className="text-micro text-muted-foreground/70">
+          <p className="text-micro text-muted-foreground">
             {t(($) => $.usage.empty_pricing_hint)}
           </p>
         </>
@@ -888,7 +884,7 @@ function UsageEmpty() {
   const { t } = useT("runtimes");
   return (
     <div className="flex flex-col items-center rounded-lg border border-dashed py-8">
-      <BarChart3 className="h-5 w-5 text-muted-foreground/40" />
+      <BarChart3 className="h-5 w-5 text-faint-foreground" />
       <p className="mt-2 text-caption text-muted-foreground">
         {t(($) => $.usage.no_data)}
       </p>

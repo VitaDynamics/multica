@@ -36,7 +36,7 @@ const toolbarMotion = {
 function WindowToolbar() {
   const { canGoBack, canGoForward, goBack, goForward } = useTabHistory();
   const navButtonClassName =
-    "flex size-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-30";
+    "flex size-7 items-center justify-center rounded-md text-faint-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-30";
 
   return (
     <div
@@ -51,7 +51,7 @@ function WindowToolbar() {
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         <SidebarTrigger
-          className="size-7 text-muted-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          className="size-7 text-faint-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         />
         <div className="flex items-center gap-1">
@@ -105,8 +105,8 @@ function useNativeNavigationGestures() {
 // is not occupying main-flow width, leave room for the fixed window toolbar
 // so tabs do not land beneath the traffic lights / navigation controls.
 function MainTopBar() {
-  const { state, isMobile } = useSidebar();
-  const sidebarHidden = state === "collapsed" || isMobile;
+  const { state, isCompact } = useSidebar();
+  const sidebarHidden = state === "collapsed" || isCompact;
 
   return (
     <motion.header
@@ -134,8 +134,8 @@ function MainTopBar() {
 // leaves the main flow, the left margin must grow to mirror the fixed mr-2 so
 // the floating canvas sits symmetrically inside the window frame.
 function MainCanvas({ children }: { children: React.ReactNode }) {
-  const { state, isMobile } = useSidebar();
-  const sidebarHidden = state === "collapsed" || isMobile;
+  const { state, isCompact } = useSidebar();
+  const sidebarHidden = state === "collapsed" || isCompact;
 
   return (
     <motion.div
