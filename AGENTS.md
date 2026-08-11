@@ -55,3 +55,23 @@ make check            # Full verification pipeline
 ```
 
 See CLAUDE.md for the authoritative rules and common commands.
+
+### Self-host Docker Release
+
+This checkout runs locally-built images (tag `vX.Y.Z-smtp-feishu`) because `main` carries local-only commits (SMTP / Feishu / auth resilience). Postgres container must NOT be recreated — it holds data via host bind-mount.
+
+Steps after merging a new upstream tag:
+
+1. Bump `MULTICA_IMAGE_TAG` in `.env` to `vX.Y.Z-smtp-feishu`.
+2. Build via compose:
+   ```bash
+   MULTICA_COMMIT_SHA=$(git rev-parse --short HEAD) \
+     docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml \
+     build backend frontend
+   ```
+3. Recreate without touching postgres:
+   ```bash
+   docker compose -f docker-compose.selfhost.yml up -d --no-deps backend frontend
+   ```
+
+Full procedure (rules, files, verification, rollback) is in CLAUDE.md → "Self-host Docker Release (this checkout)".

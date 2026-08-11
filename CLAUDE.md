@@ -242,3 +242,59 @@ Do not claim verification passed unless you ran it. If you skip checks because t
 
 - All queries filter by `workspace_id`; membership gates access; `X-Workspace-ID` selects the workspace.
 - Issue assignees are polymorphic: `assignee_type` plus `assignee_id` can reference a member or an agent.
+
+## Self-host Docker Release (this checkout)
+
+This repo's `main` branch carries a few local-only commits (SMTP support, Feishu verification-code mirror, send-code resilience). Pulling official GHCR images would lose those features, so the self-host stack runs **locally-built images** with a custom tag suffix.
+
+### Image tag convention
+
+`multica-{backend,web}:vX.Y.Z-smtp-feishu`
+
+Where `vX.Y.Z` is the upstream tag last merged into `main`. The `-smtp-feishu` suffix marks "official tag + local feature commits". Always bump the version part when you merge a new upstream tag.
+
+### What MUST NOT be touched
+
+- `multica-postgres-1` container — long-running, holds production data via host bind-mount (`/home/xucheng.zhang/data/multica/postgres`, configured in the working-tree-modified `docker-compose.selfhost.yml`). Use `--no-deps` so compose never recreates it.
+- `docker-compose.selfhost.yml` working-tree volume customizations — these are intentional host paths for postgres data and backend uploads. Don't commit them, don't revert them.
+
+### Files involved
+
+- `Dockerfile` — backend build, accepts `VERSION` / `COMMIT` build args
+- `Dockerfile.web` — frontend build, accepts `REMOTE_API_URL` / `NEXT_PUBLIC_WS_URL` / `NEXT_PUBLIC_APP_VERSION` build args
+- `docker-compose.selfhost.yml` — base compose; `backend`/`frontend` images parameterised as `${MULTICA_*_IMAGE}:${MULTICA_IMAGE_TAG}`
+- `docker-compose.selfhost.build.yml` — build override; uses the same `${MULTICA_IMAGE_TAG}` so built images carry the right tag (do NOT hardcode `:dev` here)
+- `.env` — sets `MULTICA_BACKEND_IMAGE`, `MULTICA_WEB_IMAGE`, `MULTICA_IMAGE_TAG`
+
+### Release steps
+
+1. Merge the upstream tag into `main` (`git merge vX.Y.Z`); resolve conflicts; keep local commits.
+2. Bump `.env`: `MULTICA_IMAGE_TAG=vX.Y.Z-smtp-feishu`.
+3. Build via compose (do **not** call `docker build` directly):
+   ```bash
+   MULTICA_COMMIT_SHA=$(git rev-parse --short HEAD) \
+     docker compose \
+       -f docker-compose.selfhost.yml \
+       -f docker-compose.selfhost.build.yml \
+       build backend frontend
+   ```
+4. Recreate only backend + frontend, leaving postgres alone:
+   ```bash
+   docker compose -f docker-compose.selfhost.yml up -d --no-deps backend frontend
+   ```
+
+### Verification
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep multica
+# multica-postgres-1   multica-postgres:pg17-cron           Up <unchanged>
+# multica-backend-1    multica-backend:vX.Y.Z-smtp-feishu   Up <1 min
+# multica-frontend-1   multica-web:vX.Y.Z-smtp-feishu       Up <1 min
+
+curl -sf http://localhost:${PORT:-18080}/health
+curl -sIf http://localhost:${FRONTEND_PORT:-13000} | head -1
+```
+
+### Rollback
+
+Old image tags are kept on the host. To roll back, set `MULTICA_IMAGE_TAG` back to the previous `vX.Y.Z-smtp-feishu` in `.env` and re-run step 4.
