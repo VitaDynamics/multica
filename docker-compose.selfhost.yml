@@ -34,7 +34,22 @@ name: multica
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    # Local image: pgvector/pgvector:pg17 + pg_cron extension. v0.3.5+ ships
+    # `task_usage_hourly` rollup which needs periodic invocation; we drive it
+    # with pg_cron (see Dockerfile.postgres + Self-host Docker Release notes).
+    image: ${MULTICA_POSTGRES_IMAGE:-multica-postgres}:${MULTICA_POSTGRES_TAG:-pg17-cron}
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=${POSTGRES_DB:-multica}
+    ports:
+      # Local override: publish postgres on the host so other machines on the
+      # internal network (host is 10.100.10.4, private RFC1918) can connect
+      # directly. Docker bypasses host UFW, so this binds 0.0.0.0 — acceptable
+      # here because the host is internal-only, same posture as backend/frontend.
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-multica}
       POSTGRES_USER: ${POSTGRES_USER:-multica}
@@ -58,7 +73,12 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
+      # Local override: this deployment binds backend/frontend to 0.0.0.0 to
+      # expose them on the host's external interfaces (no upstream reverse
+      # proxy on this machine). Upstream default since v0.3.6 is 127.0.0.1
+      # only — see PR #2759. Restore the loopback binding if you put a
+      # reverse proxy in front.
+      - "${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
     volumes:
       - backend_uploads:/app/data/uploads
     environment:
@@ -239,7 +259,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
       HOSTNAME: "0.0.0.0"
       REMOTE_API_URL: ${REMOTE_API_URL:-http://backend:8080}

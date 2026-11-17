@@ -13,6 +13,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # dl-cdn.alpinelinux.org is unreachable from this host; swap the Alpine
+      # bases for mirror-repointed copies (see Dockerfile.apkbase).
+      additional_contexts:
+        golang:1.27.3-alpine: docker-image://multica-apkbase-golang:1.27.3-alpine
+        alpine:3.21: docker-image://multica-apkbase-alpine:3.21
       args:
         VERSION: ${MULTICA_IMAGE_TAG:-dev}
         COMMIT: ${MULTICA_COMMIT_SHA:-}
@@ -22,5 +27,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      # Runner stage apk-installs openssl fixes since v0.5.0; same mirror trick.
+      additional_contexts:
+        node:22.23.4-alpine: docker-image://multica-apkbase-node:22.23.4-alpine
       args:
         NEXT_PUBLIC_APP_VERSION: ${MULTICA_IMAGE_TAG:-dev}
