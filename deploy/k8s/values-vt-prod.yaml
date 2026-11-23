@@ -1,4 +1,4 @@
-# Preserve source settings; replicas stay zero until the final restore.
+# Activate only after final data validation and explicit cutover approval.
 ---
 images:
   backend:
@@ -12,7 +12,7 @@ postgres:
   external:
     enabled: true
 backend:
-  replicas: 0
+  replicas: 1
   uploads:
     persistence:
       size: 20Gi
@@ -53,7 +53,7 @@ backend:
       cpu: '2'
       memory: 1Gi
 frontend:
-  replicas: 0
+  replicas: 1
   config:
     remoteApiUrl: http://multica-backend:8080
   compatibility:
