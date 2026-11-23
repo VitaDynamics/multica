@@ -1,10 +1,13 @@
-# Activate only after Certificate Ready and the final database/uploads restore.
+# TLS entry for local hosts testing. Business replicas remain zero until final cutover.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: multica
   namespace: multica
   annotations:
+    # A non-matching controller excludes this Ingress from external-dns v0.21.0.
+    # Keep public DNS unchanged until a separate DNS cutover is authorized.
+    external-dns.alpha.kubernetes.io/controller: hosts-only
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
