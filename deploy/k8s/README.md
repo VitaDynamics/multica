@@ -67,6 +67,14 @@ Ingress 模板保存在 `resources/ingress.yaml.pending`，不会被 Kustomize �
    源机备份目录为 `/mnt/storage/data/xucheng.zhang/data/multica/migration-20261123`，权限 0700。
 5. 目标库恢复、schema/扩展等 RDS 写入默认走 DMS；若用户明确豁免，才走受控数据库客户端。
 
+在线预备备份已完成，pg_restore TOC 检查通过（962 行，无 pg_cron extension 条目）：
+
+| 文件 | 字节数 | SHA-256 |
+| --- | --- | --- |
+| `database.dump` | 1766888707 | `164dadd1a6bcdc4f21468b2ba13031f53a372dae5b0740fcc04004085a127e92` |
+| `uploads.tar.gz` | 1287164211 | `ca45597b4e9d74f19c663f6b8fe2e2512609fb8628f2d76377512a28f84370f1` |
+
+
 共享 RDS 本次 Terraform apply 使用现有 default 白名单作为显式输入，plan 为
 `4 to add, 0 to change, 0 to destroy`。保留了现网额外的 `8.145.62.60/32`，
 未将它混入此 PR；仓库对此 IP 的既有漂移仍需单独收敛，之后全量 apply 前必须检查。
