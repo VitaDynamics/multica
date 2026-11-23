@@ -2,8 +2,21 @@
 
 本目录用于迁移 `bj-dev02.office` 的二开自托管服务。Argo CD 的两个 source 均跟踪
 `chore/selfhost-local-config`：`deploy/helm/multica` 使用本目录的 values，
-`deploy/k8s/resources` 管理 Namespace、SealedSecret 和 Certificate。
+`deploy/k8s/resources` 管理 Namespace、SealedSecret、Certificate 和 Ingress。
 应用注册及共享数据层声明位于 `VitaDynamics/vt-ops`。
+
+## hosts 访问的 TLS 入口（2026-11-23）
+
+用户要求先不修改公网 DNS。本次仅启用 ALB Ingress，将已 Ready 的
+`multica-vita-cn-tls` 加载到 HTTPS listener，修复 hosts 指向 ALB 后返回
+`*.vitarobot.cc` 默认证书的域名不匹配。业务前后端仍为 0 副本，旧业务继续运行。
+TLS 验证通过后，业务请求仍可能返回 503，直到最终切换时启动业务。
+
+Ingress 标注 `external-dns.alpha.kubernetes.io/controller: hosts-only`：
+已核对现场 external-dns v0.21.0 源码，controller 非 dns-controller 时直接跳过，
+因此不采集此域名。公网原 A 记录 `43.226.238.206` 保持不变；用户本机 hosts
+可使用 `39.106.218.142 multica.vita.cn`（ALB 另一个当前 IP 为 `8.141.106.58`）。
+将来切换 DNS 必须另获授权后再调整此注解。
 
 ## 现网基线与已完成准备（2026-11-23）
 
@@ -61,9 +74,9 @@ multica namespace 的 default ServiceAccount。
 
 ## 第一阶段：资源准备
 
-当前 values 将前后端 replicas 设为 **0**，resources 白名单没有包含公网 Ingress。
+当前 values 将前后端 replicas 设为 **0**。初始资源准备时未包含 Ingress；随后按用户要求增加仅供 hosts 访问的 TLS 入口，并排除 external-dns。
 首次同步只准备 PVC、证书和密钥，不运行业务进程，不争抢源端 Runtime/飞书连接。
-Ingress 模板保存在 `resources/ingress.yaml.pending`，不会被 Kustomize 或 Argo CD 渲染。
+Ingress 现位于 `resources/ingress.yaml` 并由 Argo CD 管理，证书绑定不代表业务已启动。
 
 1. 先合入本仓库 PR 到 `chore/selfhost-local-config`，再合 vt-ops 的 Application 注册。
 2. 手动同步 Multica Application，等待 Certificate Ready，确认 SealedSecret Synced。
@@ -161,8 +174,8 @@ pg_restore --no-owner --no-acl --single-transaction --exit-on-error \
    不清理共享实例其他数据库、账号或参数。
 3. 将最终数据恢复到确认空白的生产目标，校验数据及附件；删除 PVC 内临时 SQL 工作目录，
    导出需保留的报告并删除临时迁移 Pod，释放 RWO 云盘挂载，再提交 replicas=1 的变更。
-4. 先通过集群内/端口转发核对 API 与前端；证书 Ready 后将 ingress.yaml.pending
-   重命名为 ingress.yaml 并加入 resources，再实测公网 HTTPS、登录、旧数据、上传下载、WS
+4. 先通过集群内/端口转发核对 API 与前端；现有 Ingress 已配置证书且禁止自动 DNS。
+   使用本机 hosts 实测 HTTPS、登录、旧数据、上传下载、WS
    和真实 Runtime 任务。
 5. 迁移 Agent/Daemon 配置与外部回调后恢复任务提交。旧域名不会自动重定向到新域名。
    检查仍连旧入口的客户端，按实际调用点更新，不依据 DNS 切换推断它们已经迁移。
