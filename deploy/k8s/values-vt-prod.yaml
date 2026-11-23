@@ -3,7 +3,7 @@
 images:
   backend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-backend
-    tag: v0.8.2-smtp-feishu-c5574b8cf22a
+    tag: v0.8.2-smtp-feishu-c5574b8cf22a-rds-private
   frontend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-web
     tag: v0.8.2-smtp-feishu-35280f1467bb
