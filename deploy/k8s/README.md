@@ -31,7 +31,7 @@
 
 | 组件 | tag | 源 image ID | ACR manifest digest |
 | --- | --- | --- | --- |
-| 后端 | `v0.8.2-smtp-feishu-c5574b8cf22a` | `sha256:c5574b8cf22a4a489e7a52bf931945f1e7f0d19840c51cedf2fc4aadf0c0df20` | `sha256:a5dbde4dd4d6f279955baeda9d8ce077764ae6dd84f075bb957420fb7a41a6c1` |
+| 后端 | `v0.8.2-smtp-feishu-c5574b8cf22a-rds-private` | `sha256:c5574b8cf22a4a489e7a52bf931945f1e7f0d19840c51cedf2fc4aadf0c0df20` | `sha256:a5dbde4dd4d6f279955baeda9d8ce077764ae6dd84f075bb957420fb7a41a6c1` |
 | 前端 | `v0.8.2-smtp-feishu-35280f1467bb` | `sha256:35280f1467bb015b86f4a7ff0bf62ee5d40a1f1404ae0a7def20aa2a22996591` | `sha256:14e3422a6bed2e51c236c56ab89f2f3c34c9bb0e7bbc78188cc94c50d94de821` |
 
 仓库前缀为 `vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/`，分别名为
@@ -53,6 +53,9 @@ multica namespace 的 default ServiceAccount。
   源端 `sys_cron_executions` 已实证它正在执行。因此备份排除 pg_cron 及 cron schema，
   不在共享实例启用扩展、不修改共享参数、不增加重复 CronJob。
 - 源端 pgcrypto=1.3，RDS 可用版本=1.4；恢复演练须验证扩展兼容性。
+- 源端 DATABASE_URL 使用 sslmode=disable；目标实例实测未启用 SSL。连接串沿用
+  sslmode=disable 并走 ACK→RDS VPC 内网；首版 require 已纠正。后端镜像增加配置版本 tag，
+  镜像内容及 manifest digest 保持不变。
 
 ## 第一阶段：资源准备
 
@@ -65,7 +68,8 @@ Ingress 模板保存在 `resources/ingress.yaml.pending`，不会被 Kustomize �
 3. 确认 PVC 20Gi、StorageClass 和挂载权限。它采用延迟绑定，等待挂载 Pod 后才会 Bound。
 4. 源库在线预备备份用于恢复演练；与附件并非同一停写时间点，不能当作最终切换备份。
    源机备份目录为 `/mnt/storage/data/xucheng.zhang/data/multica/migration-20261123`，权限 0700。
-5. 目标库恢复、schema/扩展等 RDS 写入默认走 DMS；若用户明确豁免，才走受控数据库客户端。
+5. 本次用户已明确豁免 DMS，允许使用受控 pg_restore 仅向新建 multica 空库恢复预备备份。
+   恢复前再次核实库名、账号和空库状态。
 
 在线预备备份已完成，pg_restore TOC 检查通过（962 行，无 pg_cron extension 条目）：
 
