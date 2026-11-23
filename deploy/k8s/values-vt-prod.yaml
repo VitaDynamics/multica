@@ -1,0 +1,69 @@
+# Preserve source settings; replicas stay zero until the final restore.
+---
+images:
+  backend:
+    repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-backend
+    tag: v0.8.2-smtp-feishu-c5574b8cf22a
+  frontend:
+    repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-web
+    tag: v0.8.2-smtp-feishu-35280f1467bb
+existingSecret: multica-secrets
+postgres:
+  external:
+    enabled: true
+backend:
+  replicas: 0
+  uploads:
+    persistence:
+      size: 20Gi
+      storageClass: alicloud-disk-topology-alltype
+  config:
+    appEnv: development
+    appUrl: https://multica.vita.cn
+    frontendOrigin: https://multica.vita.cn
+    corsAllowedOrigins: https://multica.vita.cn
+    googleRedirectUri: http://10.100.10.4:13000/auth/callback
+    localUploadBaseUrl: https://multica.vita.cn
+    vcsIntegrationEnabled: 'true'
+    maintenancePort: ''
+    databaseStartupTimeout: 3m
+    databaseConnectTimeout: 5s
+    databaseSearchWorkMemMB: '64'
+    cookieDomain: ''
+    resendFromEmail: developer@vita.cn
+    allowSignup: 'true'
+    allowedEmails: ''
+    allowedEmailDomains: ''
+    disableWorkspaceCreation: ''
+    workspaceCreationAllowedEmails: ''
+    doNotTrack: ''
+    googleClientId: ''
+    s3Bucket: ''
+    s3Region: us-west-2
+    cloudfrontDomain: ''
+    cloudfrontKeyPairId: ''
+    maxPreviewSize: 2MiB
+    cloud:
+      url: ''
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '2'
+      memory: 1Gi
+frontend:
+  replicas: 0
+  config:
+    remoteApiUrl: http://multica-backend:8080
+  compatibility:
+    backendAlias: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: '1'
+      memory: 1Gi
+ingress:
+  enabled: false

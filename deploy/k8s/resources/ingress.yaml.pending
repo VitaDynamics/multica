@@ -1,0 +1,33 @@
+# Activate only after Certificate Ready and the final database/uploads restore.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multica
+  namespace: multica
+  annotations:
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: alb
+  tls:
+    - hosts:
+        - multica.vita.cn
+      secretName: multica-vita-cn-tls
+  rules:
+    - host: multica.vita.cn
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-backend
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-frontend
+                port:
+                  number: 3000
