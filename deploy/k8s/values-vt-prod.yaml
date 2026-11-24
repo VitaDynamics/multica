@@ -1,4 +1,4 @@
-# Activate only after final data validation and explicit cutover approval.
+# Start the restored copy for hosts access; public DNS remains unchanged.
 ---
 images:
   backend:
