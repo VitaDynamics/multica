@@ -5,12 +5,23 @@
 `deploy/k8s/resources` 管理 Namespace、SealedSecret、Certificate 和 Ingress。
 应用注册及共享数据层声明位于 `VitaDynamics/vt-ops`。
 
+## 启动恢复副本供 hosts 访问（2026-11-24）
+
+用户明确要求启动服务，本次将前后端各启用 1 副本，使用 2026-11-23 已完成全量验收的
+数据库和附件副本。启动前导出全部报告并删除临时迁移 Pod，释放 RWO 云盘；完整基线备份
+和 canonical SQL 保存在本机受保护目录，后续若需要集群内基线可重新预传。
+
+公网 DNS 保持原 A 记录，Ingress 继续标注 controller: hosts-only；Runtime 配置与
+GitHub webhook 保持原地址，旧服务保留。本次启动会正常运行后端调度及已配置的集成，
+没有额外创建真实 Agent 烟测任务。新旧库独立，后续写入不会自动双向同步；最终停写、
+一致性同步、客户端/回调切换须按实际两侧写入处理，不能把本次启动视为最终迁移完成。
+
 ## hosts 访问的 TLS 入口（2026-11-23）
 
 用户要求先不修改公网 DNS。本次仅启用 ALB Ingress，将已 Ready 的
 `multica-vita-cn-tls` 加载到 HTTPS listener，修复 hosts 指向 ALB 后返回
-`*.vitarobot.cc` 默认证书的域名不匹配。业务前后端仍为 0 副本，旧业务继续运行。
-TLS 验证通过后，业务请求仍可能返回 503，直到最终切换时启动业务。
+`*.vitarobot.cc` 默认证书的域名不匹配。TLS 修复阶段业务前后端为 0 副本，因此曾返回 503。2026-11-24 按用户要求各启用 1 副本，
+旧服务仍保留。
 
 Ingress 标注 `external-dns.alpha.kubernetes.io/controller: hosts-only`：
 已核对现场 external-dns v0.21.0 源码，controller 非 dns-controller 时直接跳过，
@@ -32,7 +43,7 @@ Ingress 标注 `external-dns.alpha.kubernetes.io/controller: hosts-only`：
 | 目标库 | 共享 `pgm-2ze9l2wdgc81f3xm`，PG18；独立 `multica` 库和 Normal 账号已通过 Terraform 创建 |
 | 恢复前权限验证 | 以 multica 账号实际连接成功；public schema owner=multica、CREATE=true、业务表数=0 |
 | 新入口 | `https://multica.vita.cn`，公网 `alb`、`letsencrypt-dns01` 独立证书 |
-| 当前阶段 | 初始数据库/附件恢复及全量校验完成，migrator no-op；旧业务运行中，最终停写及切流尚未执行 |
+| 当前阶段 | 恢复副本已验收，11 月 24 日按用户要求启用业务供 hosts 访问；最终一致性同步和客户端切换尚未执行 |
 
 源端仍在处理任务。本次仅进行在线预备恢复与校验，最终停写及切流另行确认。迁移不会重建 `multica-postgres-1`，也不修改或提交源机的 Compose 卷路径。
 
@@ -74,8 +85,8 @@ multica namespace 的 default ServiceAccount。
 
 ## 第一阶段：资源准备
 
-当前 values 将前后端 replicas 设为 **0**。初始资源准备时未包含 Ingress；随后按用户要求增加仅供 hosts 访问的 TLS 入口，并排除 external-dns。
-首次同步只准备 PVC、证书和密钥，不运行业务进程，不争抢源端 Runtime/飞书连接。
+初始资源准备时前后端 replicas 为 **0**，未包含 Ingress；随后增加排除 external-dns 的 TLS 入口，11 月 24 日再按用户要求将副本各设为 **1**。
+首次同步仅准备 PVC、证书和密钥；后续启用业务的范围及限制见上方启动记录。
 Ingress 现位于 `resources/ingress.yaml` 并由 Argo CD 管理，证书绑定不代表业务已启动。
 
 1. 先合入本仓库 PR 到 `chore/selfhost-local-config`，再合 vt-ops 的 Application 注册。
