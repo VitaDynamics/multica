@@ -5,28 +5,27 @@
 `deploy/k8s/resources` 管理 Namespace、SealedSecret、Certificate 和 Ingress。
 应用注册及共享数据层声明位于 `VitaDynamics/vt-ops`。
 
-## 新旧域名并行访问（2026-11-25）
+## 内网双域名访问（2026-11-25）
 
-新环境新增 `https://multica-cloud.vita.cn`，保留 `https://multica.vita.cn` 作为兼容入口，
-两者路由到同一套 ACK 服务及恢复副本。新域名使用独立 Certificate/Secret，旧证书保持原样。
-新证书 sync-wave=-1，Ready 后才同步引用它的 Ingress 和运行配置。
+新增 `https://multica-cloud.vita.cn` 作为新环境的内网地址，同时在内网支持
+`https://multica.vita.cn`。独立 Ingress `multica-intranet` 使用现场已存在的
+`alb-intranet` IngressClass，对应 ALB addressType=Intranet：
+`alb-xd5ahwl3ovmx3krkq9.cn-beijing.alb.aliyuncsslb.com`。
+新域名不加入公网 ALB；原 `multica` 公网兼容入口只保留原域名，保持原样。
+
+新域名使用独立 Certificate/Secret，旧证书保持原样。新证书 sync-wave=-1，
+Ready 后才同步引用它的内网 Ingress 和运行配置。公网 A/CNAME 不新增、不切换；
+两个 Ingress 均保留 controller: hosts-only，禁止 external-dns 同步业务记录。
+cert-manager DNS-01 仅为证书签发临时验证 TXT，不代表开放公网服务。
 
 APP URL、前端 Origin、PUBLIC URL 以 multica-cloud 为主，CORS 和 WebSocket 同时允许两个域名。
-COOKIE_DOMAIN 保持为空，两域名各自登录；LOCAL_UPLOAD_BASE_URL 设为空以生成相对上传 URL，
-使新上传文件跟随当前访问域名，避免跨域 cookie 问题。既有数据库记录和附件文件保持原样。
-PUBLIC URL 只重封对应的 SealedSecret 条目，其余密钥不改；后端使用新配置 tag
-`v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts`，manifest digest 与原版本一致，未升级代码。
+COOKIE_DOMAIN 保持为空，两域名各自登录；LOCAL_UPLOAD_BASE_URL 设为空，生成相对上传 URL，
+使文件跟随当前访问域名。PUBLIC URL 仅重封对应 SealedSecret 条目，其余密钥原样保留。
+后端新配置 tag 为 `v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts`，镜像 digest 与原版本一致。
 
-公网 A/CNAME **不新增、不切换**。Ingress 继续使用 controller: hosts-only，
-external-dns 不采集两个域名。cert-manager DNS-01 仅为签发证书临时验证 TXT。
-本机 `/etc/hosts` 可将两个名称写在同一行：
-
-```text
-39.106.218.142 multica-cloud.vita.cn multica.vita.cn
-```
-
-原 Multica 的服务、域名解析、旧 Runtime 地址及外部 webhook 设置均保持原状。
-新域名通过 hosts 验证完毕后，公网 DNS 的任何调整仍需独立授权。
+本机 hosts 可设置 `10.0.58.228 multica-cloud.vita.cn multica.vita.cn`，备用 IP 为
+`10.0.120.111`。访问端需要办公网/WireGuard 到该 VPC 的连通性。
+原 Multica 服务、旧 Runtime 地址、外部 webhook 设置和数据库记录均保持原状。
 
 ## 启动恢复副本供 hosts 访问（2026-11-24）
 

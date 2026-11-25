@@ -1,4 +1,4 @@
-# Both domains serve the running restored copy through local hosts overrides.
+# TLS entry for local hosts testing. Business replicas remain zero until final cutover.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -16,28 +16,8 @@ spec:
     - hosts:
         - multica.vita.cn
       secretName: multica-vita-cn-tls
-    - hosts:
-        - multica-cloud.vita.cn
-      secretName: multica-cloud-vita-cn-tls
   rules:
     - host: multica.vita.cn
-      http:
-        paths:
-          - path: /ws
-            pathType: Prefix
-            backend:
-              service:
-                name: multica-backend
-                port:
-                  number: 8080
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: multica-frontend
-                port:
-                  number: 3000
-    - host: multica-cloud.vita.cn
       http:
         paths:
           - path: /ws

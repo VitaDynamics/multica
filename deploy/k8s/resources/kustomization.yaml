@@ -6,3 +6,4 @@ resources:
   - certificate.yaml
   - sealed-secret.yaml
   - ingress.yaml
+  - ingress-intranet.yaml

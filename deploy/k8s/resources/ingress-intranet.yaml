@@ -1,0 +1,56 @@
+# Private hosts-only entry for both domains.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multica-intranet
+  namespace: multica
+  annotations:
+    # A non-matching controller excludes this Ingress from external-dns v0.21.0.
+    # Keep public DNS unchanged until a separate DNS cutover is authorized.
+    external-dns.alpha.kubernetes.io/controller: hosts-only
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: alb-intranet
+  tls:
+    - hosts:
+        - multica.vita.cn
+      secretName: multica-vita-cn-tls
+    - hosts:
+        - multica-cloud.vita.cn
+      secretName: multica-cloud-vita-cn-tls
+  rules:
+    - host: multica.vita.cn
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-backend
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-frontend
+                port:
+                  number: 3000
+    - host: multica-cloud.vita.cn
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-backend
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multica-frontend
+                port:
+                  number: 3000
