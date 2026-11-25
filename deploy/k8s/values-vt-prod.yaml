@@ -3,7 +3,7 @@
 images:
   backend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-backend
-    tag: v0.8.2-smtp-feishu-c5574b8cf22a-rds-private
+    tag: v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts
   frontend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-web
     tag: v0.8.2-smtp-feishu-35280f1467bb
@@ -19,11 +19,11 @@ backend:
       storageClass: alicloud-disk-topology-alltype
   config:
     appEnv: development
-    appUrl: https://multica.vita.cn
-    frontendOrigin: https://multica.vita.cn
-    corsAllowedOrigins: https://multica.vita.cn
+    appUrl: https://multica-cloud.vita.cn
+    frontendOrigin: https://multica-cloud.vita.cn
+    corsAllowedOrigins: https://multica-cloud.vita.cn,https://multica.vita.cn
     googleRedirectUri: http://10.100.10.4:13000/auth/callback
-    localUploadBaseUrl: https://multica.vita.cn
+    localUploadBaseUrl: ''
     vcsIntegrationEnabled: 'true'
     maintenancePort: ''
     databaseStartupTimeout: 3m
