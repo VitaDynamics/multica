@@ -5,6 +5,19 @@
 `deploy/k8s/resources` 管理 Namespace、SealedSecret、Certificate 和 Ingress。
 应用注册及共享数据层声明位于 `VitaDynamics/vt-ops`。
 
+## 新域名 DNS 生效，旧域名解析保留（2026-11-25）
+
+用户明确：暂不切换的是旧域名，新域名应通过 DNS 正常生效，无需 hosts。
+内网 Ingress 现允许 external-dns 管理，但以 ingress-hostname-source: annotation-only
+和 hostname: multica-cloud.vita.cn 限定只发布新域名，忽略 rules/tls 中的旧域名。
+原公网 Ingress 仍为 controller: hosts-only，旧 multica.vita.cn A 记录保持不变。
+
+新解析为 `multica-cloud.vita.cn CNAME alb-xd5ahwl3ovmx3krkq9.cn-beijing.alb.aliyuncsslb.com`，
+解析结果为私网 IP 10.0.58.228/10.0.120.111。记录由现有 external-dns（公共 vita.cn zone）
+维护，并自动创建所有权 TXT；这使域名可正常解析，不会把 Intranet ALB 开放到公网。
+访问仍需要办公网或 WireGuard 到 VPC 的网络连通性。新域名无需 hosts 覆盖，旧客户端继续
+使用旧域名的原解析。下面 hosts-only 内容保留为此前阶段的操作记录，以本段现状为准。
+
 ## 内网双域名访问（2026-11-25）
 
 新增 `https://multica-cloud.vita.cn` 作为新环境的内网地址，同时在内网支持
