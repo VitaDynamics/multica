@@ -5,6 +5,29 @@
 `deploy/k8s/resources` 管理 Namespace、SealedSecret、Certificate 和 Ingress。
 应用注册及共享数据层声明位于 `VitaDynamics/vt-ops`。
 
+## 新旧域名并行访问（2026-11-25）
+
+新环境新增 `https://multica-cloud.vita.cn`，保留 `https://multica.vita.cn` 作为兼容入口，
+两者路由到同一套 ACK 服务及恢复副本。新域名使用独立 Certificate/Secret，旧证书保持原样。
+新证书 sync-wave=-1，Ready 后才同步引用它的 Ingress 和运行配置。
+
+APP URL、前端 Origin、PUBLIC URL 以 multica-cloud 为主，CORS 和 WebSocket 同时允许两个域名。
+COOKIE_DOMAIN 保持为空，两域名各自登录；LOCAL_UPLOAD_BASE_URL 设为空以生成相对上传 URL，
+使新上传文件跟随当前访问域名，避免跨域 cookie 问题。既有数据库记录和附件文件保持原样。
+PUBLIC URL 只重封对应的 SealedSecret 条目，其余密钥不改；后端使用新配置 tag
+`v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts`，manifest digest 与原版本一致，未升级代码。
+
+公网 A/CNAME **不新增、不切换**。Ingress 继续使用 controller: hosts-only，
+external-dns 不采集两个域名。cert-manager DNS-01 仅为签发证书临时验证 TXT。
+本机 `/etc/hosts` 可将两个名称写在同一行：
+
+```text
+39.106.218.142 multica-cloud.vita.cn multica.vita.cn
+```
+
+原 Multica 的服务、域名解析、旧 Runtime 地址及外部 webhook 设置均保持原状。
+新域名通过 hosts 验证完毕后，公网 DNS 的任何调整仍需独立授权。
+
 ## 启动恢复副本供 hosts 访问（2026-11-24）
 
 用户明确要求启动服务，本次将前后端各启用 1 副本，使用 2026-11-23 已完成全量验收的

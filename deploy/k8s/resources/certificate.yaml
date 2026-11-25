@@ -12,3 +12,20 @@ spec:
     - multica.vita.cn
   privateKey:
     rotationPolicy: Always
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: multica-cloud-vita-cn-tls
+  namespace: multica
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: multica-cloud-vita-cn-tls
+  issuerRef:
+    name: letsencrypt-dns01
+    kind: ClusterIssuer
+  dnsNames:
+    - multica-cloud.vita.cn
+  privateKey:
+    rotationPolicy: Always
