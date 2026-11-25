@@ -23,8 +23,16 @@ COOKIE_DOMAIN 保持为空，两域名各自登录；LOCAL_UPLOAD_BASE_URL 设�
 使文件跟随当前访问域名。PUBLIC URL 仅重封对应 SealedSecret 条目，其余密钥原样保留。
 后端新配置 tag 为 `v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts`，镜像 digest 与原版本一致。
 
-本机 hosts 可设置 `10.0.58.228 multica-cloud.vita.cn multica.vita.cn`，备用 IP 为
-`10.0.120.111`。访问端需要办公网/WireGuard 到该 VPC 的连通性。
+本机 hosts 建议只覆盖新域名：
+
+```text
+10.0.58.228 multica-cloud.vita.cn
+```
+
+备用 IP 为 `10.0.120.111`，访问端需要办公网/WireGuard 到该 VPC 的连通性。
+如果旧 Runtime 使用 `multica.vita.cn` 连接旧服务，应移除该客户端之前把此域名指向新 ALB
+的 hosts 覆盖，让它继续使用原解析。新环境仍保留原域名兼容能力；仅在明确要将该客户端
+指向新环境时，才同时覆盖原域名。
 原 Multica 服务、旧 Runtime 地址、外部 webhook 设置和数据库记录均保持原状。
 
 ## 启动恢复副本供 hosts 访问（2026-11-24）
