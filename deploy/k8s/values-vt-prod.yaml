@@ -3,10 +3,10 @@
 images:
   backend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-backend
-    tag: v0.8.2-smtp-feishu-c5574b8cf22a-dual-hosts
+    tag: v0.13.0-smtp-feishu-112c7f838
   frontend:
     repository: vbot-acr-registry-vpc.cn-beijing.cr.aliyuncs.com/vbot-platform/multica-web
-    tag: v0.8.2-smtp-feishu-35280f1467bb
+    tag: v0.13.0-smtp-feishu-112c7f838
 existingSecret: multica-secrets
 postgres:
   external:
